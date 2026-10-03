@@ -1,20 +1,24 @@
 /**
- * Arena — Live-Sport, Spielplan, Tabellen und Teams.
+ * Arena — Live-Sport, Spielplan, Ligen und Teams.
  *
- * - Live: alle Spiele von heute als Leiste (Wappen 2:1 Wappen; laufende Spiele tragen ihre Spielzeit als
- *   Lichtstrich), darunter das gewaehlte Spiel gross mit Spielfeld (Ballverlauf) und Ticker.
- * - Spielplan: eine Woche zurueck bis drei Wochen voraus, nach Tagen; „Heute“ steht oben.
- * - Tabelle: Zonen als Lichtstrich in ihrer Farbe; eine Zeile antippen zeigt das Team.
- * - Teams: naechstes Spiel und Form (letzte fuenf als Lichtpunkte) deiner Teams.
- * Einstellungen sind dieselben wie in der Notch und werden mit ihr abgeglichen.
+ * - Live: alle Spiele von heute (im Fenster als Leiste oben, breit/Vollbild als Spalte links), daneben das
+ *   gewaehlte Spiel gross mit Spielfeld (Ballverlauf), Ticker und Analyse (Statistik, Druckphasen, Aufstellung;
+ *   vor dem Spiel Prognose, Form, direkter Vergleich — detail-ui.ts).
+ * - Spielplan: eine Woche zurueck bis drei Wochen voraus, nach Tagen; je Tag die Wettbewerbe nebeneinander.
+ * - Ligen: je Sportart und Wettbewerb Tabelle, Spielplan und Schlagzeilen (Transfers markiert) nebeneinander.
+ * - Teams: naechstes Spiel und Form deiner Teams; das Blatt zeigt Spiele und Kader.
+ * Einstellungen sind dieselben wie in der Notch und werden mit ihr abgeglichen. F11 = Vollbild.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { glassLight, ICONS, lightScroller, liquid, segments, windowControls } from "./nojo/nojo-ui";
+import { glassLight, ICONS, lightScroller, liquid, segments, svgIcon, windowControls } from "./nojo/nojo-ui";
 import { bugEl, clockOf, crestEl, kickoff, Pitch, scoreOf, tickerEl, type SportMatch, type SportPlay, type SportState, type SportTeam } from "./sport-ui";
 import { crestOf, DEFAULT_SPORT, renderSettings, type FavTeam, type LeagueInfo, type Snapshot } from "./settings-ui";
+import { card, detailCards, type MatchDetail } from "./detail-ui";
+import { classify, initLaya, installLaya, labelOf, layaStatus, layaWork, onLaya, retryLaya, uninstallLaya } from "./laya/client";
+import { KIND_DE, MIN_P, TRANSFER_KINDS, type Kind } from "./laya/questions";
 
 const q = <T extends Element = HTMLElement>(s: string, root: ParentNode = document) => root.querySelector(s) as T;
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -24,8 +28,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e;
 }
 const announce = (t: string) => { q(".sr").textContent = t; };
+const faint = (text: string, cls = "faint pad") => el("p", cls, text);
 
-type View = "live" | "plan" | "table" | "teams";
+type View = "live" | "plan" | "leagues" | "teams";
+const VIEWS: View[] = ["live", "plan", "leagues", "teams"];
 let view: View = "live";
 let live: SportState = { matches: [] };
 let focusKey = "";
@@ -34,10 +40,17 @@ let leagues: LeagueInfo[] = [];
 const pitch = new Pitch();
 
 const DAY = 86_400_000;
+const SPORT_ORDER = ["soccer", "football", "basketball", "hockey", "baseball"];
+const SPORT_NAME: Record<string, string> = { soccer: "Fußball", football: "Football", basketball: "Basketball", hockey: "Eishockey", baseball: "Baseball" };
 const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString();
 const timeOf = (t: number) => new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 const norm = (n: string) => n.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\b(1|fc|sv|vfl|vfb|tsg|sc|fsv|spvgg|bsc)\b/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 const isFavTeam = (t: SportTeam) => snap.sport.teams.some((f) => f.key === t.id || norm(f.name) === norm(t.name));
+const leagueInfo = (id: string) => leagues.find((l) => l.id === id);
+const leagueName = (id: string) => leagueInfo(id)?.name ?? id;
+const sportOf = (id: string) => leagueInfo(id)?.sport ?? "soccer";
+/** gewaehlte Wettbewerbe in der Reihenfolge der Einstellungen, nach Sportart sortiert */
+const chosen = () => [...snap.sport.leagues].sort((a, b) => SPORT_ORDER.indexOf(sportOf(a)) - SPORT_ORDER.indexOf(sportOf(b)));
 
 /** Spielzeit 0..1 (Fussball 90 Min, sonst nach Abschnitt) — der Lichtstrich unter laufenden Spielen */
 function progress(m: SportMatch) {
@@ -63,14 +76,33 @@ function countdown(t: number) {
   return days === 1 ? "morgen" : `in ${days} Tagen`;
 }
 
+/** „vor 5 Min“, „vor 3 Std“, „vor 2 Tagen“ */
+function ago(t: number) {
+  const min = Math.max(1, Math.round((Date.now() - t) / 60_000));
+  if (min < 60) return `vor ${min} Min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `vor ${h} Std`;
+  const d = Math.round(h / 24);
+  return d === 1 ? "gestern" : `vor ${d} Tagen`;
+}
+
 function dayLabel(t: number) {
   const now = Date.now();
-  const d = new Date(t);
-  const date = d.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" }).replace(/\.,/, ",");
+  const date = new Date(t).toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" }).replace(/\.,/, ",");
   if (sameDay(t, now)) return `Heute · ${date}`;
   if (sameDay(t, now + DAY)) return `Morgen · ${date}`;
   if (sameDay(t, now - DAY)) return `Gestern · ${date}`;
   return date;
+}
+const shortDay = (t: number) => dayLabel(t).replace(/^(Heute|Morgen|Gestern) · .*/, "$1");
+
+/** Chips: Ein-/Ausschalter (aria-pressed) */
+function chip(text: string, on: boolean, click: () => void, title = "") {
+  const b = el("button", "", text);
+  b.setAttribute("aria-pressed", String(on));
+  if (title) b.title = title;
+  b.addEventListener("click", click);
+  return b;
 }
 
 // ---------- Ansichten ----------
@@ -85,15 +117,16 @@ function setView(v: View) {
   document.querySelectorAll<HTMLElement>(".view").forEach((s) => { s.hidden = s.dataset.view !== v; });
   try { localStorage.setItem("arena-view", v); } catch { /* egal */ }
   q("main").scrollTop = 0;
-  if (v === "live") renderLive();
+  if (v === "live") { focusSig = ""; renderLive(); }
   if (v === "plan") void loadPlan();
-  if (v === "table") renderTables();
+  if (v === "leagues") renderLeagues();
   if (v === "teams") void renderTeams();
 }
 
 // ---------- Live ----------
 
 let focusSig = "";
+let detailSig = "";
 
 function focusMatch(): SportMatch | undefined {
   const ms = live.matches;
@@ -120,13 +153,27 @@ function tile(m: SportMatch, on: boolean) {
   return b;
 }
 
+/** Spiele von heute, nach Wettbewerb gruppiert (die Wettbewerbsnamen zeigt nur die breite Spalte) */
+function renderStrip(f: SportMatch | undefined) {
+  const strip = q(".strip");
+  const ms = live.matches;
+  const groups = new Map<string, SportMatch[]>();
+  for (const m of ms) groups.set(m.league_name, [...(groups.get(m.league_name) ?? []), m]);
+  const out: HTMLElement[] = [];
+  for (const [name, list] of groups) {
+    out.push(el("div", "strip-league n-eyebrow", name));
+    out.push(...list.map((m) => tile(m, m.key === f?.key)));
+  }
+  strip.replaceChildren(...out);
+  const solo = ms.length < 2;
+  strip.hidden = solo;
+  q(".view[data-view=live]").classList.toggle("solo", solo);
+}
+
 function renderLive() {
   if (view !== "live") return;
-  const strip = q(".strip");
   const f = focusMatch();
-  const ms = live.matches;
-  strip.replaceChildren(...ms.map((m) => tile(m, m.key === f?.key)));
-  strip.hidden = ms.length < 2;
+  renderStrip(f);
   const box = q(".focus");
   if (!f) {
     focusSig = "";
@@ -134,10 +181,15 @@ function renderLive() {
     return;
   }
   const sig = JSON.stringify([f.key, f.home.score, f.away.score, f.clock, f.state, f.events.map((e) => e.id)]);
-  if (sig === focusSig) return;
-  focusSig = sig;
-  box.replaceChildren(focusEl(f));
+  if (sig !== focusSig) {
+    focusSig = sig;
+    detailSig = "";
+    box.replaceChildren(focusEl(f));
+  }
+  renderDetail(f);
 }
+
+const openIcon = svgIcon('<path d="M9 6h9v9"/><path d="M18 6 6 18"/>');
 
 function focusEl(f: SportMatch) {
   const wrap = el("article", `big ${f.state}`);
@@ -147,7 +199,7 @@ function focusEl(f: SportMatch) {
   head.append(el("span", "n-eyebrow", f.league_name), el("span", `big-clock ${f.state}`, f.state === "pre" ? `${kickoff(f)} · ${countdown(f.start)}` : clockOf(f)));
   if (f.link) {
     const open = el("button", "n-ico sm n-glass n-liquid");
-    open.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h9v9"/><path d="M18 6 6 18"/></svg>`;
+    open.innerHTML = openIcon;
     open.title = "Spielseite im Browser öffnen";
     open.setAttribute("aria-label", open.title);
     open.addEventListener("click", () => void invoke("open_link", { url: f.link }).catch(() => {}));
@@ -158,20 +210,64 @@ function focusEl(f: SportMatch) {
   const num = el("div", "big-num");
   if (f.state === "pre") num.append(el("span", "big-ko", timeOf(f.start)));
   else num.append(el("b", "", f.home.score || "0"), el("i", "", ":"), el("b", "", f.away.score || "0"));
-  score.append(crestEl(f.home, "crest big-crest"), num, crestEl(f.away, "crest big-crest"));
-  const usePitch = f.pitch && f.source === "espn" && f.state !== "pre";
-  const body = el("div", "big-body" + (usePitch ? " with-pitch" : ""));
-  if (usePitch) {
+  const name = (t: SportTeam) => el("span", "big-name", t.short || t.name);
+  const side = (t: SportTeam) => { const s = el("div", "big-side"); s.append(crestEl(t, "crest big-crest"), name(t)); return s; };
+  score.append(side(f.home), num, side(f.away));
+
+  // zwei Spalten: links Spielfeld und Analyse, rechts Ticker, Aufstellung, Spielort
+  const body = el("div", "big-body");
+  const main = el("div", "col col-main");
+  const aside = el("div", "col col-side");
+  if (f.pitch && f.source === "espn" && f.state !== "pre") {
     pitch.setMatch(f);
-    const pw = el("div", "pitch-card n-card");
+    const pw = card("Ballverlauf", "", "pitch-card");
     pw.append(pitch.el);
-    body.append(pw);
+    main.append(pw);
   }
-  const tk = el("div", "ticker-card n-card");
-  tk.append(el("div", "n-eyebrow", "Ticker"), tickerEl(f, 14));
-  body.append(tk);
+  main.append(el("div", "slot slot-main"));
+  if (f.state !== "pre") {
+    const tk = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
+    tk.append(tickerEl(f, 24));
+    aside.append(tk);
+  }
+  aside.append(el("div", "slot slot-side"));
+  body.append(main, aside);
   wrap.append(head, score, body);
   return wrap;
+}
+
+// Analyse zum gewaehlten Spiel (info.rs); laufend alle 30 s, sonst selten
+const details = new Map<string, { at: number; d?: MatchDetail; err?: string; loading?: boolean }>();
+
+function renderDetail(f: SportMatch) {
+  const main = q(".slot-main"), side = q(".slot-side");
+  if (!main || !side) return;
+  if (f.key.startsWith("oldb/")) {
+    if (detailSig !== "oldb") { detailSig = "oldb"; main.replaceChildren(); side.replaceChildren(); }
+    return;
+  }
+  const c = details.get(f.key);
+  const maxAge = f.state === "in" ? 30_000 : f.state === "pre" ? 600_000 : 3_600_000;
+  if ((!c || Date.now() - c.at > maxAge) && !c?.loading) {
+    details.set(f.key, { ...(c ?? { at: 0 }), loading: true });
+    const key = f.key;
+    invoke<MatchDetail>("match_detail", { key, state: f.state })
+      .then((d) => details.set(key, { at: Date.now(), d }))
+      .catch((e) => details.set(key, { at: Date.now(), err: String(e), d: c?.d }))
+      .finally(() => { const now = focusMatch(); if (view === "live" && now?.key === key) renderDetail(now); });
+  }
+  const cur = details.get(f.key);
+  const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.state === "in" ? f.clock : ""]);
+  if (sig === detailSig) return;
+  detailSig = sig;
+  if (!cur?.d) {
+    main.replaceChildren(...(cur?.err ? [] : [faint("Analyse wird geladen …", "faint slot-wait")]));
+    side.replaceChildren();
+    return;
+  }
+  const { main: a, side: b } = detailCards(f, cur.d);
+  main.replaceChildren(...a);
+  side.replaceChildren(...b);
 }
 
 /** Kein Spiel heute: das naechste (deine Teams zuerst) mit Countdown */
@@ -183,7 +279,7 @@ function renderEmpty(box: HTMLElement) {
     const c = el("button", "next n-card");
     c.title = `${next.home.name} – ${next.away.name}`;
     c.append(el("span", "n-eyebrow", `Als Nächstes · ${next.league_name}`), bugEl(next, "–", "next-bug"),
-      el("span", "next-when", `${dayLabel(next.start).replace(/^Heute · .*/, "Heute")} · ${timeOf(next.start)} · ${countdown(next.start)}`));
+      el("span", "next-when", `${shortDay(next.start)} · ${timeOf(next.start)} · ${countdown(next.start)}`));
     c.addEventListener("click", () => setView("plan"));
     e.append(c);
   } else if (!plan) void loadPlan(false, true);
@@ -213,6 +309,7 @@ let planLoading = false;
 let planErr = "";
 let planScope: "all" | "fav" = "all";
 const planOff = new Set<string>();
+const sportOff = new Set<string>();
 let planScrolled = false;
 
 async function loadPlan(force = false, quiet = false) {
@@ -229,20 +326,24 @@ async function loadPlan(force = false, quiet = false) {
   }
   planLoading = false;
   if (view === "plan") renderPlan();
+  if (view === "leagues") renderLeaguePlan();
   if (view === "live" && !live.matches.length) renderLive();
 }
 
-function prow(m: SportMatch) {
+/** Zeile im Spielplan: Zeit · Wappen Stand Wappen (· Wettbewerb) */
+function prow(m: SportMatch, opts: { league?: boolean; when?: string } = {}) {
   const lv = live.matches.find((x) => x.key === m.key) ?? m;
-  const r = el("button", `prow ${lv.state}` + (lv.fav ? " fav" : ""));
+  const r = el("button", `prow ${lv.state}` + (lv.fav ? " fav" : "") + (opts.league ? " with-league" : ""));
   r.title = `${lv.home.name} – ${lv.away.name} · ${lv.league_name}`;
   const when = el("span", "p-when");
-  if (lv.state === "pre") when.textContent = timeOf(lv.start);
+  if (opts.when) when.textContent = opts.when;
+  else if (lv.state === "pre") when.textContent = timeOf(lv.start);
   else if (lv.state === "in") when.append(el("i", "live-dot"), clockOf(lv));
   else when.textContent = clockOf(lv) === "Ende" ? timeOf(lv.start) : clockOf(lv);
   const mid = el("span", "p-match");
   mid.append(crestEl(lv.home), el("b", "", lv.state === "pre" ? "–" : scoreOf(lv)), crestEl(lv.away));
-  r.append(when, mid, el("span", "p-league", lv.league_name));
+  r.append(when, mid);
+  if (opts.league) r.append(el("span", "p-league", lv.league_name));
   r.addEventListener("click", () => {
     if (live.matches.some((x) => x.key === lv.key)) { focusKey = lv.key; setView("live"); }
     else if (lv.link) void invoke("open_link", { url: lv.link }).catch(() => {});
@@ -251,39 +352,54 @@ function prow(m: SportMatch) {
 }
 
 function renderPlan() {
-  const chips = q(".plan-leagues");
-  chips.replaceChildren(...snap.sport.leagues.map((id) => {
-    const b = el("button", "", leagues.find((l) => l.id === id)?.name ?? id);
-    b.setAttribute("aria-pressed", String(!planOff.has(id)));
-    b.addEventListener("click", () => { if (planOff.has(id)) planOff.delete(id); else planOff.add(id); renderPlan(); });
-    return b;
-  }));
+  const ids = chosen();
+  const sports = [...new Set(ids.map(sportOf))];
+  const sportChips = q(".plan-sports");
+  sportChips.hidden = sports.length < 2;
+  sportChips.replaceChildren(...sports.map((s) => chip(SPORT_NAME[s] ?? s, !sportOff.has(s), () => {
+    if (sportOff.has(s)) sportOff.delete(s); else sportOff.add(s);
+    renderPlan();
+  })));
+  q(".plan-leagues").replaceChildren(...ids.filter((id) => !sportOff.has(sportOf(id))).map((id) => chip(leagueName(id), !planOff.has(id), () => {
+    if (planOff.has(id)) planOff.delete(id); else planOff.add(id);
+    renderPlan();
+  })));
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) => b.classList.toggle("active", b.dataset.scope === planScope));
   const box = q(".plan");
   if (!plan) {
-    box.replaceChildren(el("p", "faint pad", planLoading ? "Spielplan wird geladen …" : planErr || "Noch nichts geladen"));
+    box.replaceChildren(faint(planLoading ? "Spielplan wird geladen …" : planErr || "Noch nichts geladen"));
     return;
   }
-  const list = plan.filter((m) => !planOff.has(m.league) && (planScope === "all" || m.fav));
+  const list = plan.filter((m) => !planOff.has(m.league) && !sportOff.has(m.sport) && (planScope === "all" || m.fav));
   if (!list.length) {
-    box.replaceChildren(el("p", "faint pad", planScope === "fav" ? "Keine Spiele deiner Teams in diesen drei Wochen." : "Keine Spiele in diesem Zeitraum."));
+    box.replaceChildren(faint(planScope === "fav" ? "Keine Spiele deiner Teams in diesen drei Wochen." : "Keine Spiele in diesem Zeitraum."));
     return;
   }
-  const out: HTMLElement[] = [];
-  let day = "";
-  let today: HTMLElement | null = null;
-  let group: HTMLElement | null = null;
+  // Tag -> Wettbewerb -> Spiele; die Wettbewerbe eines Tages stehen nebeneinander
+  const days = new Map<string, Map<string, SportMatch[]>>();
   for (const m of list) {
     const d = new Date(m.start).toDateString();
-    if (d !== day) {
-      day = d;
-      group = el("section", "day");
-      const h = el("h3", "day-head n-liquid", dayLabel(m.start));
-      group.append(h);
-      out.push(group);
-      if (!today && m.start >= new Date().setHours(0, 0, 0, 0)) today = group;
+    const day = days.get(d) ?? new Map<string, SportMatch[]>();
+    day.set(m.league, [...(day.get(m.league) ?? []), m]);
+    days.set(d, day);
+  }
+  const order = (id: string) => { const i = ids.indexOf(id); return i < 0 ? 99 : i; };
+  const out: HTMLElement[] = [];
+  let today: HTMLElement | null = null;
+  const start = new Date().setHours(0, 0, 0, 0);
+  for (const day of days.values()) {
+    const first = [...day.values()][0][0];
+    const sec = el("section", "day");
+    sec.append(el("h3", "day-head n-liquid", dayLabel(first.start)));
+    const grid = el("div", "day-grid");
+    for (const [id, ms] of [...day.entries()].sort((a, b) => order(a[0]) - order(b[0]))) {
+      const c = card(leagueName(id), `${SPORT_NAME[ms[0].sport] ?? ""} · ${ms.length} ${ms.length === 1 ? "Spiel" : "Spiele"}`, "plan-card");
+      c.append(...ms.map((m) => prow(m)));
+      grid.append(c);
     }
-    group!.append(prow(m));
+    sec.append(grid);
+    out.push(sec);
+    if (!today && first.start >= start) today = sec;
   }
   box.replaceChildren(...out);
   if (!planScrolled && today) {
@@ -292,46 +408,83 @@ function renderPlan() {
   }
 }
 
-// ---------- Tabelle ----------
+// ---------- Ligen: Tabelle | Spielplan | Schlagzeilen ----------
 
 type Row = { rank: number; team: SportTeam; played: string; won: string; draw: string; lost: string; goals: string; diff: string; points: string; pct: string; behind: string; note: string; color: string; fav: boolean };
 type Group = { name: string; rows: Row[] };
-const NO_TABLE = new Set(["dfb", "dfbteam"]);
-let tableLeague = "";
+const NO_TABLE = new Set(["dfb", "dfbteam", "turnier"]);
+let leagueSport = "";
+let leagueId = "";
 const tables = new Map<string, { at: number; groups?: Group[]; err?: string }>();
+type Article = { headline: string; text: string; at: number; link: string; image: string; transfer: boolean };
+type Move = { at: number; text: string; team: SportTeam };
+const news = new Map<string, { at: number; v?: { news: Article[]; moves: Move[] }; err?: string }>();
+let newsFilter: "all" | "transfer" | "injury" = "all";
 
-function renderTables() {
-  const ids = snap.sport.leagues.filter((id) => !NO_TABLE.has(id));
-  if (!ids.includes(tableLeague)) tableLeague = ids[0] ?? "";
-  const chips = q(".table-leagues");
-  chips.replaceChildren(...ids.map((id) => {
-    const b = el("button", "", leagues.find((l) => l.id === id)?.name ?? id);
-    b.setAttribute("aria-pressed", String(id === tableLeague));
-    b.addEventListener("click", () => { tableLeague = id; renderTables(); });
+/** Einordnung einer Schlagzeile: mit Laya dessen Etikett (ab MIN_P), sonst die Stichwortsuche aus info.rs */
+function newsKind(a: Article): { kind: Kind | ""; p: number; ai: boolean; pending: boolean } {
+  if (layaStatus().state === "ready") {
+    const l = labelOf(a.headline);
+    if (l) return { kind: l.p >= MIN_P ? l.kind : "", p: l.p, ai: true, pending: false };
+    if (layaWork().busy) return { kind: "", p: 0, ai: true, pending: true };
+  }
+  return { kind: a.transfer ? "signed" : "", p: 0, ai: false, pending: false };
+}
+const isTransferKind = (k: Kind | "") => !!k && TRANSFER_KINDS.includes(k);
+
+function renderLeagues() {
+  const ids = chosen();
+  const sports = [...new Set(ids.map(sportOf))];
+  if (!sports.includes(leagueSport)) leagueSport = sports[0] ?? "";
+  const seg = q(".league-sports");
+  seg.hidden = sports.length < 2;
+  seg.replaceChildren(...sports.map((s) => {
+    const b = el("button", s === leagueSport ? "active" : "", SPORT_NAME[s] ?? s);
+    b.addEventListener("click", () => { leagueSport = s; leagueId = ""; renderLeagues(); });
     return b;
   }));
-  const box = q(".tables");
-  if (!tableLeague) { box.replaceChildren(el("p", "faint pad", "Wähle Wettbewerbe mit Tabelle in den Einstellungen.")); return; }
-  const c = tables.get(tableLeague);
+  const mine = ids.filter((id) => sportOf(id) === leagueSport);
+  if (!mine.includes(leagueId)) leagueId = mine.find((id) => !NO_TABLE.has(id)) ?? mine[0] ?? "";
+  q(".league-chips").replaceChildren(...mine.map((id) => chip(leagueName(id), id === leagueId, () => { leagueId = id; renderLeagues(); })));
+  const grid = q(".league-grid");
+  if (!leagueId) {
+    grid.hidden = true;
+    q(".league-chips").replaceChildren(faint("Wähle Wettbewerbe in den Einstellungen.", "faint"));
+    return;
+  }
+  grid.hidden = false;
+  renderTable();
+  renderLeaguePlan();
+  renderNews();
+}
+
+function renderTable() {
+  const box = q(".lg-table");
+  const id = leagueId;
+  if (NO_TABLE.has(id)) {
+    const c = card("Tabelle");
+    c.append(faint("K.-o.-Wettbewerb – hier gibt es keine Tabelle.", "faint c-empty"));
+    box.replaceChildren(c);
+    return;
+  }
+  const c = tables.get(id);
   if (!c || Date.now() - c.at > 10 * 60_000) {
-    if (!c) box.replaceChildren(el("p", "faint pad", "Tabelle wird geladen …"));
-    const want = tableLeague;
-    tables.set(want, { ...(c ?? {}), at: Date.now() });
-    invoke<Group[]>("standings", { league: want })
-      .then((g) => tables.set(want, { at: Date.now(), groups: g }))
-      .catch((e) => tables.set(want, { at: Date.now(), err: String(e) }))
-      .finally(() => { if (view === "table" && tableLeague === want) renderTables(); });
+    if (!c) { const w = card("Tabelle"); w.append(faint("Tabelle wird geladen …", "faint c-empty")); box.replaceChildren(w); }
+    tables.set(id, { ...(c ?? {}), at: Date.now() });
+    invoke<Group[]>("standings", { league: id })
+      .then((g) => tables.set(id, { at: Date.now(), groups: g }))
+      .catch((e) => tables.set(id, { at: Date.now(), err: String(e) }))
+      .finally(() => { if (view === "leagues" && leagueId === id) renderTable(); });
     if (!c) return;
   }
-  if (c?.err) { box.replaceChildren(el("p", "faint pad", c.err)); return; }
+  if (c?.err) { const w = card("Tabelle"); w.append(faint(c.err, "faint c-empty")); box.replaceChildren(w); return; }
   if (!c?.groups) return;
-  const sport = leagues.find((l) => l.id === tableLeague)?.sport ?? "soccer";
+  const sport = sportOf(id);
   const us = sport !== "soccer";
   const out: HTMLElement[] = [];
   const notes = new Map<string, string>();
   for (const g of c.groups) {
-    const t = el("section", "table n-card");
-    if (c.groups.length > 1 || g.name) t.append(el("div", "n-eyebrow t-name", g.name));
+    const t = card(c.groups.length > 1 ? g.name || "Tabelle" : "Tabelle", c.groups.length > 1 ? "" : `${g.rows.length} Teams`, "table");
     const head = el("div", "trow thead" + (us ? " us" : ""));
     const cols = us ? ["#", "", "S", "N", "Quote", sport === "hockey" ? "Pkt" : "Rückst."] : ["#", "", "Sp", "S", "U", "N", "Tore", "+/–", "Pkt"];
     head.append(...cols.map((x) => el("span", "", x)));
@@ -361,6 +514,132 @@ function renderTables() {
     out.push(legend);
   }
   box.replaceChildren(...out);
+}
+
+/** Spielplan des gewaehlten Wettbewerbs, eigene Bildlaufflaeche, „Heute“ steht oben */
+function renderLeaguePlan() {
+  if (view !== "leagues") return;
+  const box = q(".lg-plan");
+  const c = card("Spielplan", "", "lg-plan-card");
+  const list = el("div", "lg-scroll");
+  if (!plan) {
+    list.append(faint(planLoading ? "Spielplan wird geladen …" : planErr || "Noch nichts geladen", "faint c-empty"));
+    if (!planLoading) void loadPlan(false, true);
+  } else {
+    const ms = plan.filter((m) => m.league === leagueId);
+    c.querySelector(".c-head")!.append(el("span", "c-meta", `${ms.length} Spiele · 4 Wochen`));
+    if (!ms.length) list.append(faint("Keine Spiele in diesem Zeitraum.", "faint c-empty"));
+    let day = "";
+    let today: HTMLElement | null = null;
+    const start = new Date().setHours(0, 0, 0, 0);
+    for (const m of ms) {
+      const d = new Date(m.start).toDateString();
+      if (d !== day) {
+        day = d;
+        const h = el("div", "lg-day", dayLabel(m.start));
+        list.append(h);
+        if (!today && m.start >= start) today = h;
+      }
+      list.append(prow(m));
+    }
+    // gleicher Wettbewerb: Position behalten (Live-Updates zeichnen neu), neuer: zu „Heute“ springen
+    const prev = box.querySelector<HTMLElement>(".lg-scroll");
+    const keep = lgPlanFor === leagueId && prev ? prev.scrollTop : -1;
+    lgPlanFor = leagueId;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (keep >= 0) list.scrollTop = keep;
+      else if (today) list.scrollTop = Math.max(0, today.getBoundingClientRect().top - list.getBoundingClientRect().top - 4);
+    }));
+  }
+  c.append(list);
+  box.replaceChildren(c);
+}
+let lgPlanFor = "";
+
+function renderNews() {
+  const box = q(".lg-news");
+  const id = leagueId;
+  if (leagueInfo(id)?.source === "OpenLigaDB") {
+    const c = card("Schlagzeilen");
+    c.append(faint("Für diesen Wettbewerb gibt es keine Schlagzeilen (OpenLigaDB).", "faint c-empty"));
+    box.replaceChildren(c);
+    return;
+  }
+  const n = news.get(id);
+  if (!n || Date.now() - n.at > 15 * 60_000) {
+    news.set(id, { ...(n ?? {}), at: Date.now() });
+    invoke<{ news: Article[]; moves: Move[] }>("league_news", { league: id })
+      .then((v) => news.set(id, { at: Date.now(), v }))
+      .catch((e) => news.set(id, { at: Date.now(), err: String(e) }))
+      .finally(() => { if (view === "leagues" && leagueId === id) renderNews(); });
+  }
+  const parts: HTMLElement[] = [];
+  const cur = news.get(id);
+  const ls = layaStatus();
+  if (cur?.v && ls.state === "ready") classify(cur.v.news.map((a) => a.headline));
+  const work = layaWork();
+  const meta = ls.state === "ready"
+    ? work.busy && work.total ? `Laya ordnet ein … ${work.done}/${work.total}` : work.error ? "ESPN · Laya: Fehler" : "ESPN · eingeordnet von Laya"
+    : "ESPN · englisch";
+  const c = card("Schlagzeilen", meta, "news-card");
+  if (!cur?.v) c.append(faint(cur?.err ?? "Wird geladen …", "faint c-empty"));
+  else {
+    const kinds = cur.v.news.map((a) => newsKind(a));
+    const transfers = kinds.filter((k) => isTransferKind(k.kind)).length;
+    const injuries = kinds.filter((k) => k.kind === "injury").length;
+    const filters: [typeof newsFilter, string][] = [["all", "Alle"]];
+    if (transfers) filters.push(["transfer", `Transfers · ${transfers}`]);
+    if (injuries && kinds.some((k) => k.ai)) filters.push(["injury", `Verletzungen · ${injuries}`]);
+    if (!filters.some(([k]) => k === newsFilter)) newsFilter = "all";
+    if (filters.length > 1) {
+      const seg = el("div", "n-seg news-seg");
+      for (const [k, label] of filters) {
+        const b = el("button", k === newsFilter ? "active" : "", label);
+        b.addEventListener("click", () => { newsFilter = k; renderNews(); });
+        seg.append(b);
+      }
+      c.append(seg);
+    }
+    const list = cur.v.news.map((a, i) => ({ a, k: kinds[i] }))
+      .filter(({ k }) => newsFilter === "all" || (newsFilter === "transfer" ? isTransferKind(k.kind) : k.kind === "injury"));
+    if (!list.length) c.append(faint("Gerade keine Meldungen.", "faint c-empty"));
+    for (const { a, k } of list.slice(0, 18)) {
+      const r = el("button", "article" + (isTransferKind(k.kind) ? " transfer" : "") + (k.kind ? ` k-${k.kind}` : ""));
+      r.title = a.text || a.headline;
+      if (a.image) {
+        const img = new Image();
+        img.alt = "";
+        img.loading = "lazy";
+        img.src = a.image;
+        img.onerror = () => img.remove();
+        r.append(img);
+      }
+      const t = el("span", "a-text");
+      const sub = el("small", "");
+      const label = k.kind ? KIND_DE[k.kind] : "";
+      if (label) {
+        const tag = el("span", "a-tag", label);
+        if (k.ai) tag.title = `Laya: ${Math.round(k.p * 100)} % sicher`;
+        sub.append(tag);
+      } else if (k.pending) sub.append(el("span", "a-tag wait", "…"));
+      if (a.at) sub.append(el("span", "", ago(a.at)));
+      t.append(el("b", "", a.headline), sub);
+      r.append(t);
+      if (a.link) r.addEventListener("click", () => void invoke("open_link", { url: a.link }).catch(() => {}));
+      c.append(r);
+    }
+  }
+  parts.push(c);
+  if (cur?.v?.moves.length) {
+    const m = card("Kaderbewegungen", `${cur.v.moves.length} zuletzt`, "moves-card");
+    for (const x of cur.v.moves.slice(0, 20)) {
+      const r = el("div", "move");
+      r.append(crestEl(x.team), el("span", "mv-text", x.text), el("small", "mv-at", new Date(x.at).toLocaleDateString("de-DE", { day: "numeric", month: "short" })));
+      m.append(r);
+    }
+    parts.push(m);
+  }
+  box.replaceChildren(...parts);
 }
 
 // ---------- Teams ----------
@@ -406,7 +685,7 @@ function nextEl(t: FavTeam, m: SportMatch | undefined) {
   const home = lv.home.id === t.key || norm(lv.home.name) === norm(t.name);
   const opp = home ? lv.away : lv.home;
   n.append(el("span", "t-vs", home ? "gegen" : "bei"), crestEl(opp, "crest"),
-    el("span", "t-when", lv.state === "in" ? `live · ${scoreOf(lv)} · ${clockOf(lv)}` : `${dayLabel(lv.start).replace(/ · .*$/, "")} ${timeOf(lv.start)}`));
+    el("span", "t-when", lv.state === "in" ? `live · ${scoreOf(lv)} · ${clockOf(lv)}` : `${shortDay(lv.start).replace(/ · .*$/, "")} ${timeOf(lv.start)}`));
   n.title = `${lv.home.name} – ${lv.away.name} · ${lv.league_name} · ${countdown(lv.start)}`;
   return n;
 }
@@ -416,7 +695,9 @@ async function renderTeams() {
   const teams = snap.sport.teams;
   const cards: HTMLElement[] = teams.map((t) => {
     const c = el("article", "team n-card");
-    c.append(crestOf(t, "crest team-crest"), el("h3", "", t.name));
+    const head = el("div", "team-head");
+    head.append(crestOf(t, "crest team-crest"), el("h3", "", t.name));
+    c.append(head);
     const v = teamViews.get(t.key);
     if (v?.v) {
       c.append(el("span", "n-eyebrow", "Als Nächstes"), nextEl(t, v.v.next[0]), el("span", "n-eyebrow", "Form"), formEl(t, v.v.last));
@@ -424,7 +705,7 @@ async function renderTeams() {
     c.addEventListener("click", () => openTeam(t));
     return c;
   });
-  const add = el("button", "team add n-card");
+  const add = el("button", "team add");
   add.append(el("span", "plus", "+"), el("span", "", teams.length ? "Team hinzufügen" : "Wähle deine Teams"));
   add.addEventListener("click", () => openSettings());
   grid.replaceChildren(...cards, add);
@@ -439,11 +720,11 @@ async function renderTeams() {
 
 let sheetKind: "" | "settings" | "team" = "";
 let sheetTeam: FavTeam | null = null;
+let sheetTab: "games" | "squad" = "games";
 
 function openSheet(kind: "settings" | "team", title: string | HTMLElement) {
   sheetKind = kind;
-  const t = q(".sheet-title");
-  t.replaceChildren(title);
+  q(".sheet-title").replaceChildren(title);
   q(".backdrop").hidden = false;
   requestAnimationFrame(() => q(".backdrop").classList.add("show"));
 }
@@ -513,11 +794,57 @@ function renderSheetSettings() {
       onSettings(false);
     },
   });
-  q(".sheet-body").append(appCard());
+  q(".sheet-body").append(layaCard(), appCard());
+}
+
+// ---------- Laya (laya.rs, src/laya) ----------
+
+const mb = (b: number) => `${Math.round(b / 1_000_000)} MB`;
+
+function layaCard() {
+  const s = layaStatus();
+  const w = layaWork();
+  const c = el("section", "s-card n-card laya-card");
+  const h = el("div", "s-head");
+  const badge = { off: "aus", missing: "nicht geladen", downloading: "wird geladen", ready: "installiert", error: "Fehler" }[s.state];
+  h.append(el("span", "n-eyebrow", "KI-Einordnung · Laya"), el("span", "faint", badge));
+  c.append(h, el("p", "s-hint", "Ordnet Schlagzeilen ein: Transfer fix, Gerücht, Verlängerung, Verletzung. Läuft lokal auf diesem Rechner, ohne Konto; nur das Modell wird einmal geladen."));
+  if (s.state === "downloading" || (s.state === "missing" && s.want)) {
+    const bar = el("div", "dl-bar");
+    const fill = el("i", "");
+    fill.style.width = `${s.total ? (s.done / s.total) * 100 : 0}%`;
+    bar.append(fill);
+    c.append(bar, el("p", "faint dl-text", s.done ? `${mb(s.done)} von ${mb(s.total)}` : "Startet gleich …"));
+  }
+  if (s.state === "error") c.append(el("p", "faint err", s.message || "Laden fehlgeschlagen."));
+  if (s.state === "ready" && w.error) c.append(el("p", "faint err", `Einordnung fehlgeschlagen: ${w.error}`));
+  const row = el("div", "app-row");
+  row.append(el("span", "faint", s.state === "ready" ? `${mb(s.total)} auf diesem Rechner` : `Download ca. ${mb(s.total || 307_000_000)}`));
+  const btns = el("div", "btn-row");
+  const btn = (text: string, primary: boolean, fn: () => void) => {
+    const b = el("button", "n-btn" + (primary ? " primary" : ""), text);
+    b.addEventListener("click", fn);
+    btns.append(b);
+  };
+  if (s.state === "off") btn("Installieren", true, () => void installLaya());
+  if (s.state === "error") btn("Erneut versuchen", true, () => void installLaya());
+  if (s.state === "ready" && w.error) btn("Erneut versuchen", false, () => { retryLaya(); if (view === "leagues") renderNews(); });
+  if (s.state === "downloading" || s.state === "missing") btn("Abbrechen", false, () => void uninstallLaya());
+  if (s.state === "ready" || s.state === "error") btn("Deinstallieren", false, () => { void uninstallLaya(); announce("Laya wird entfernt"); });
+  row.append(btns);
+  c.append(row);
+  return c;
+}
+
+function renderLaya() {
+  const box = q(".laya-card");
+  if (box) box.replaceWith(layaCard());
+  if (view === "leagues") renderNews();
 }
 
 async function openTeam(t: FavTeam) {
   sheetTeam = t;
+  sheetTab = "games";
   const title = el("span", "sheet-team");
   title.append(crestOf(t, "crest"), t.name);
   openSheet("team", title);
@@ -526,12 +853,60 @@ async function openTeam(t: FavTeam) {
   if (sheetTeam?.key === t.key) renderSheetTeam();
 }
 
+type RosterPlayer = { jersey: string; name: string; pos: string; pos_name: string; age: number; nation: string; flag: string; injury: string };
+const rosters = new Map<string, { v?: RosterPlayer[]; err?: string; loading?: boolean }>();
+const POS_DE: Record<string, string> = { G: "Tor", D: "Abwehr", M: "Mittelfeld", F: "Sturm" };
+
+function squadEl(t: FavTeam): HTMLElement[] {
+  const c = rosters.get(t.key);
+  if (!c) {
+    rosters.set(t.key, { loading: true });
+    invoke<RosterPlayer[]>("team_roster", { key: t.key })
+      .then((v) => rosters.set(t.key, { v }))
+      .catch((e) => rosters.set(t.key, { err: String(e) }))
+      .finally(() => { if (sheetTeam?.key === t.key && sheetTab === "squad") renderSheetTeam(); });
+    return [faint("Kader wird geladen …", "faint")];
+  }
+  if (!c.v) return [faint(c.err ?? "Kader wird geladen …", "faint")];
+  const groups = new Map<string, RosterPlayer[]>();
+  const soccer = c.v.every((p) => !p.pos || p.pos in POS_DE);
+  for (const p of c.v) {
+    const g = soccer ? POS_DE[p.pos] ?? "Weitere" : p.pos_name || p.pos || "Weitere";
+    groups.set(g, [...(groups.get(g) ?? []), p]);
+  }
+  const order = ["Tor", "Abwehr", "Mittelfeld", "Sturm"];
+  const out: HTMLElement[] = [];
+  for (const [g, ps] of [...groups.entries()].sort((a, b) => (order.indexOf(a[0]) + 1 || 9) - (order.indexOf(b[0]) + 1 || 9))) {
+    out.push(el("div", "n-eyebrow", `${g} · ${ps.length}`));
+    for (const p of ps.sort((a, b) => (Number(a.jersey) || 99) - (Number(b.jersey) || 99))) {
+      const r = el("div", "player" + (p.injury ? " hurt" : ""));
+      r.append(el("span", "pl-no", p.jersey || "–"), el("span", "pl-name", p.name));
+      const meta = el("span", "pl-meta");
+      if (p.flag) {
+        const f = new Image();
+        f.alt = p.nation;
+        f.title = p.nation;
+        f.src = p.flag;
+        f.onerror = () => f.remove();
+        meta.append(f);
+      }
+      if (p.age) meta.append(el("span", "", `${p.age}`));
+      r.append(meta);
+      if (p.injury) { const i = el("span", "pl-hurt", "verletzt"); i.title = p.injury; r.append(i); }
+      out.push(r);
+    }
+  }
+  out.push(faint("Kader: ESPN. Marktwerte und Transferhistorie gibt es nicht frei abrufbar.", "faint fine"));
+  return out;
+}
+
 function renderSheetTeam() {
   const t = sheetTeam;
   if (sheetKind !== "team" || !t) return;
   const body = q(".sheet-body");
   const mine = snap.sport.teams.some((x) => x.key === t.key);
-  const fav = el("button", "n-btn" + (mine ? "" : " primary"), mine ? "Aus meinen Teams entfernen" : "Zu meinen Teams");
+  const bar = el("div", "sheet-bar");
+  const fav = el("button", "n-btn" + (mine ? "" : " primary"), mine ? "Aus meinen Teams" : "Zu meinen Teams");
   fav.addEventListener("click", () => {
     const teams = mine ? snap.sport.teams.filter((x) => x.key !== t.key) : [...snap.sport.teams, { key: t.key, name: t.name, ...(t.logo ? { logo: t.logo } : {}) }];
     const sport = { ...snap.sport, teams };
@@ -541,20 +916,34 @@ function renderSheetTeam() {
     renderSheetTeam();
     onSettings(false);
   });
+  const parts: HTMLElement[] = [bar];
+  bar.append(fav);
+  // Kader nur fuer ESPN-Teams
+  if (!t.key.startsWith("oldb:")) {
+    const seg = el("div", "n-seg sheet-tabs");
+    for (const [k, label] of [["games", "Spiele"], ["squad", "Kader"]] as const) {
+      const b = el("button", k === sheetTab ? "active" : "", label);
+      b.addEventListener("click", () => { sheetTab = k; renderSheetTeam(); });
+      seg.append(b);
+    }
+    bar.append(seg);
+  } else sheetTab = "games";
+  if (sheetTab === "squad") {
+    parts.push(...squadEl(t));
+    body.replaceChildren(...parts);
+    return;
+  }
   const v = teamViews.get(t.key);
-  const parts: HTMLElement[] = [fav];
-  if (!v?.v) parts.push(el("p", "faint", v?.err ?? "Wird geladen …"));
+  if (!v?.v) parts.push(faint(v?.err ?? "Wird geladen …", "faint"));
   else {
     parts.push(el("div", "n-eyebrow", "Nächste Spiele"));
-    if (!v.v.next.length) parts.push(el("p", "faint", "Kein Spiel angesetzt"));
-    v.v.next.forEach((m) => { const r = prow(m); r.querySelector(".p-when")!.textContent = `${dayLabel(m.start).replace(/^(Heute|Morgen|Gestern) · .*/, "$1")} ${timeOf(m.start)}`; parts.push(r); });
+    if (!v.v.next.length) parts.push(faint("Kein Spiel angesetzt", "faint"));
+    v.v.next.forEach((m) => parts.push(prow(m, { when: `${shortDay(m.start)} ${timeOf(m.start)}` })));
     parts.push(el("div", "n-eyebrow", "Letzte Ergebnisse"));
-    if (!v.v.last.length) parts.push(el("p", "faint", "Noch keine"));
+    if (!v.v.last.length) parts.push(faint("Noch keine", "faint"));
     v.v.last.forEach((m) => {
-      const r = prow(m);
-      const { r: res } = result(m, t);
-      r.classList.add(`res-${res}`);
-      r.querySelector(".p-when")!.textContent = new Date(m.start).toLocaleDateString("de-DE", { day: "numeric", month: "short" });
+      const r = prow(m, { when: new Date(m.start).toLocaleDateString("de-DE", { day: "numeric", month: "short" }) });
+      r.classList.add(`res-${result(m, t).r}`);
       parts.push(r);
     });
     parts.push(el("div", "n-eyebrow", "Form"), formEl(t, v.v.last));
@@ -581,24 +970,48 @@ function onSettings(rerenderSheet = true) {
   if (leagueKey !== lastLeagues) {
     lastLeagues = leagueKey;
     planAt = 0;
-    if (view === "plan") void loadPlan(true);
+    if (view === "plan" || view === "leagues") void loadPlan(true);
   }
   if (view === "live") { focusSig = ""; renderLive(); }
   if (view === "plan") renderPlan();
-  if (view === "table") renderTables();
+  if (view === "leagues") renderLeagues();
   if (view === "teams") void renderTeams();
   if (rerenderSheet && sheetKind === "settings" && !document.activeElement?.closest(".sheet-body input")) renderSheetSettings();
   if (sheetKind === "team") renderSheetTeam();
 }
 let lastLeagues = "";
 
+// ---------- Fenster: Vollbild und maximiert ----------
+
+/** Fenster erst beim Start holen (vorher gibt es die Tauri-Bruecke evtl. noch nicht) */
+let win: ReturnType<typeof getCurrentWindow>;
+const FULL_ON = svgIcon('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>');
+const FULL_OFF = svgIcon('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>');
+let isFull = false;
+
+async function syncWindow() {
+  const [full, max] = await Promise.all([win.isFullscreen().catch(() => false), win.isMaximized().catch(() => false)]);
+  isFull = !!full;
+  document.body.classList.toggle("full", isFull);
+  document.body.classList.toggle("max", !!max);
+  const b = q(".full-btn");
+  b.innerHTML = isFull ? FULL_OFF : FULL_ON;
+  b.title = isFull ? "Vollbild verlassen (F11)" : "Vollbild (F11)";
+  b.setAttribute("aria-label", b.title);
+}
+
+async function setFull(on: boolean) {
+  await win.setFullscreen(on).catch(() => {});
+  await syncWindow();
+}
+
 // ---------- Start ----------
 
 async function main() {
-  const win = getCurrentWindow();
+  win = getCurrentWindow();
   windowControls({
     minimize: () => void win.minimize().catch(() => {}),
-    toggleMaximize: () => void win.toggleMaximize().catch(() => {}),
+    toggleMaximize: () => void (isFull ? setFull(false) : win.toggleMaximize().catch(() => {})),
     close: () => void win.close().catch(() => {}),
   });
   q(".gear").innerHTML = ICONS.settings;
@@ -607,29 +1020,36 @@ async function main() {
   liquid();
   segments(document, ".n-seg");
   lightScroller(q("main"), { insetTop: 74 });
+  void syncWindow();
+  void win.onResized(() => void syncWindow()).catch(() => {});
 
   document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view as View)));
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) =>
     b.addEventListener("click", () => { planScope = b.dataset.scope === "fav" ? "fav" : "all"; renderPlan(); }));
   q(".gear").addEventListener("click", openSettings);
+  q(".full-btn").addEventListener("click", () => void setFull(!isFull));
   q(".sheet-x").addEventListener("click", closeSheet);
   q(".backdrop").addEventListener("mousedown", (e) => { if (e.target === e.currentTarget) closeSheet(); });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && sheetKind) closeSheet();
-    if (e.ctrlKey && /^[1-4]$/.test(e.key)) setView((["live", "plan", "table", "teams"] as View[])[Number(e.key) - 1]);
+    if (e.key === "Escape") { if (sheetKind) closeSheet(); else if (isFull) void setFull(false); }
+    if (e.key === "F11") { e.preventDefault(); void setFull(!isFull); }
+    if (e.ctrlKey && /^[1-4]$/.test(e.key)) setView(VIEWS[Number(e.key) - 1]);
   });
 
-  snap = await invoke<Snapshot>("settings_get").catch(() => snap);
+  snap = (await invoke<Snapshot | null>("settings_get").catch(() => null)) ?? snap;
   lastLeagues = snap.sport.leagues.join(",");
-  leagues = await invoke<LeagueInfo[]>("sport_leagues").catch(() => []);
+  leagues = (await invoke<LeagueInfo[] | null>("sport_leagues").catch(() => null)) ?? [];
   await listen<Snapshot>("settings", (e) => { snap = e.payload; onSettings(); });
   await listen<Upd>("update", (e) => { upd = e.payload; renderUpd(); });
-  upd = await invoke<Upd>("update_state").catch(() => upd);
+  onLaya(renderLaya);
+  await initLaya();
+  upd = (await invoke<Upd | null>("update_state").catch(() => null)) ?? upd;
   renderUpd();
   await listen<SportState>("sport", (e) => {
     live = e.payload;
     if (view === "live") renderLive();
     if (view === "plan" && plan) renderPlan();
+    if (view === "leagues" && plan) renderLeaguePlan();
   });
   await listen<{ key: string; reset: boolean; plays: SportPlay[] }>("sport-plays", (e) => {
     if (e.payload.key !== pitch.matchKey) return;
@@ -641,10 +1061,11 @@ async function main() {
   if (pending) focusKey = pending;
 
   renderSync();
-  let start: View = "live";
-  try { start = (localStorage.getItem("arena-view") as View) || "live"; } catch { /* egal */ }
-  setView(pending ? "live" : ["live", "plan", "table", "teams"].includes(start) ? start : "live");
-  // Spielplan im Hintergrund vorbereiten (fuer „Als Nächstes“ und den Reiter)
+  let start = "live";
+  try { start = localStorage.getItem("arena-view") || "live"; } catch { /* egal */ }
+  if (start === "table") start = "leagues"; // frueher „Tabelle“
+  setView(pending ? "live" : VIEWS.includes(start as View) ? (start as View) : "live");
+  // Spielplan im Hintergrund vorbereiten (fuer „Als Nächstes“, Spielplan und Ligen)
   if (view !== "plan") void loadPlan(false, true);
   setInterval(tickWatch, 1000);
   setInterval(() => { if (view === "live") { focusSig = ""; renderLive(); } }, 30_000);

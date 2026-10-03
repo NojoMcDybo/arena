@@ -2,6 +2,8 @@
 //!
 //! - feed.rs:     Live-Spiele, Ticker und Ballverlauf (dieselben Quellen wie die Notch)
 //! - extra.rs:    Spielplan, Tabellen, Teams
+//! - laya.rs:     optionales KI-Modell fuer Schlagzeilen (Download, Pruefung, Deinstallation)
+//! - info.rs:     Spieldetails (Statistik, Druckphasen, Aufstellung, Prognose), Kader, Schlagzeilen
 //! - settings.rs: Sport-Einstellungen, abgeglichen mit der Notch (127.0.0.1:47800)
 //! - update.rs:   Selbst-Update ueber GitHub Releases (NojoMcDybo/arena)
 //!
@@ -10,6 +12,8 @@
 
 mod extra;
 mod feed;
+mod info;
+mod laya;
 mod settings;
 mod update;
 
@@ -100,6 +104,12 @@ pub fn run() {
             extra::schedule,
             extra::standings,
             extra::team_view,
+            info::match_detail,
+            info::team_roster,
+            info::league_news,
+            laya::laya_status,
+            laya::laya_install,
+            laya::laya_uninstall,
             settings::settings_get,
             settings::settings_set,
             update::update_state,
@@ -114,6 +124,7 @@ pub fn run() {
             settings::spawn_sync(h.clone());
             feed::spawn(h.clone());
             update::spawn(h.clone());
+            laya::spawn(h.clone());
             // Schema arena:// fuer diesen Benutzer anmelden (der Installer tut es auch; so klappt es auch im Test)
             #[cfg(desktop)]
             let _ = app.deep_link().register_all();

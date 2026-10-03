@@ -9,45 +9,55 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body class="n-window">
-    <!-- rahmenloses Fenster: Kopf zum Ziehen; Reiter, Abgleich mit der Notch und Einstellungen schweben als
-         Liquid Glass ueber dem Inhalt, der darunter durchscrollt. Fensterknoepfe als Glaspille (main.ts). -->
+    <!-- rahmenloses Fenster: Kopf zum Ziehen (Raster: Marke | Reiter | Werkzeuge); Reiter, Abgleich und Knoepfe
+         schweben als Liquid Glass ueber dem Inhalt. Fensterknoepfe als Glaspille (main.ts), im Vollbild ausgeblendet. -->
     <header class="top" data-tauri-drag-region>
       <div class="brand" data-tauri-drag-region>Arena</div>
       <nav class="tabs n-seg n-liquid panel" role="tablist" aria-label="Ansicht">
         <button role="tab" data-view="live">Live</button>
         <button role="tab" data-view="plan">Spielplan</button>
-        <button role="tab" data-view="table">Tabelle</button>
+        <button role="tab" data-view="leagues">Ligen</button>
         <button role="tab" data-view="teams">Teams</button>
       </nav>
-      <div class="top-right">
-        <span class="sync n-glass n-liquid" role="status"><i class="dot"></i><span>Notch</span></span>
+      <div class="top-right" data-tauri-drag-region>
+        <span class="sync n-glass n-liquid" role="status"><i class="dot"></i><span class="sync-t">Notch</span></span>
+        <button class="n-ico sm n-glass n-liquid full-btn" title="Vollbild (F11)" aria-label="Vollbild"></button>
         <button class="n-ico sm n-glass n-liquid gear" title="Einstellungen" aria-label="Einstellungen"></button>
       </div>
     </header>
 
     <main id="main">
-      <!-- Live: alle Spiele von heute als Leiste, darunter das gewaehlte gross mit Spielfeld und Ticker -->
+      <!-- Live: Spiele von heute (Fenster: Leiste oben, breit: Spalte links), daneben das gewaehlte gross
+           mit Spielfeld, Ticker und Analyse -->
       <section class="view" data-view="live">
         <div class="strip" aria-label="Spiele heute"></div>
         <div class="focus"></div>
       </section>
 
-      <!-- Spielplan: eine Woche zurueck, drei Wochen voraus -->
+      <!-- Spielplan: Tage untereinander, je Tag die Wettbewerbe nebeneinander -->
       <section class="view" data-view="plan" hidden>
         <div class="filters">
           <div class="n-seg plan-scope" role="group" aria-label="Spiele">
             <button data-scope="all">Alle</button>
             <button data-scope="fav">Meine Teams</button>
           </div>
+          <div class="chips plan-sports"></div>
           <div class="chips plan-leagues"></div>
         </div>
         <div class="plan"></div>
       </section>
 
-      <!-- Tabelle -->
-      <section class="view" data-view="table" hidden>
-        <div class="filters"><div class="chips table-leagues"></div></div>
-        <div class="tables"></div>
+      <!-- Ligen: je Sportart und Wettbewerb Tabelle, Spielplan und Schlagzeilen nebeneinander -->
+      <section class="view" data-view="leagues" hidden>
+        <div class="filters">
+          <div class="n-seg league-sports" role="group" aria-label="Sportart"></div>
+          <div class="chips league-chips"></div>
+        </div>
+        <div class="league-grid">
+          <div class="lg-table"></div>
+          <div class="lg-plan"></div>
+          <div class="lg-news"></div>
+        </div>
       </section>
 
       <!-- Teams: naechstes Spiel und Form deiner Teams -->
@@ -56,7 +66,7 @@
       </section>
     </main>
 
-    <!-- Seitenblatt (Einstellungen, Team aus der Tabelle) -->
+    <!-- Seitenblatt (Einstellungen, Team) -->
     <div class="backdrop" hidden>
       <aside class="sheet n-liquid panel" data-refract="10" role="dialog" aria-modal="true">
         <div class="sheet-head">

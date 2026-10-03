@@ -21,7 +21,7 @@ const DAY: u64 = 86_400_000;
 
 static CACHE: Mutex<Option<HashMap<String, (Instant, Duration, Value)>>> = Mutex::new(None);
 
-fn cached(agent: &ureq::Agent, url: &str, ttl: Duration) -> Result<Value, String> {
+pub(crate) fn cached(agent: &ureq::Agent, url: &str, ttl: Duration) -> Result<Value, String> {
     if let Some((at, keep, v)) = CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(url) {
         if at.elapsed() < *keep {
             return Ok(v.clone());
@@ -330,7 +330,7 @@ fn flatten_scores(v: &mut Value) {
 }
 
 /// In welcher ESPN-Liga spielt dieses Team? (gewaehlte Wettbewerbe zuerst, dann alle Vereinsligen)
-fn home_paths(agent: &ureq::Agent, sport: &str, id: &str) -> Vec<&'static str> {
+pub(crate) fn home_paths(agent: &ureq::Agent, sport: &str, id: &str) -> Vec<&'static str> {
     let chosen = feed::cfg().leagues;
     let mut ls: Vec<&League> = LEAGUES.iter().filter(|l| l.sport == sport && l.team.is_none() && l.id != "turnier").collect();
     ls.sort_by_key(|l| !chosen.iter().any(|c| c == l.id));
