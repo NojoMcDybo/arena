@@ -3,6 +3,7 @@
 //! - feed.rs:     Live-Spiele, Ticker und Ballverlauf (dieselben Quellen wie die Notch)
 //! - extra.rs:    Spielplan, Tabellen, Teams
 //! - settings.rs: Sport-Einstellungen, abgeglichen mit der Notch (127.0.0.1:47800)
+//! - update.rs:   Selbst-Update ueber GitHub Releases (NojoMcDybo/arena)
 //!
 //! Die Notch oeffnet ein Spiel hier ueber arena://spiel/<schluessel> (Deep Link; zweiter Start reicht ihn an
 //! das laufende Fenster weiter).
@@ -10,6 +11,7 @@
 mod extra;
 mod feed;
 mod settings;
+mod update;
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -90,6 +92,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             feed::sport_watch,
             feed::sport_leagues,
@@ -99,6 +102,9 @@ pub fn run() {
             extra::team_view,
             settings::settings_get,
             settings::settings_set,
+            update::update_state,
+            update::update_check,
+            update::update_install,
             take_pending,
             open_link,
         ])
@@ -107,6 +113,7 @@ pub fn run() {
             settings::load(&h);
             settings::spawn_sync(h.clone());
             feed::spawn(h.clone());
+            update::spawn(h.clone());
             // Schema arena:// fuer diesen Benutzer anmelden (der Installer tut es auch; so klappt es auch im Test)
             #[cfg(desktop)]
             let _ = app.deep_link().register_all();

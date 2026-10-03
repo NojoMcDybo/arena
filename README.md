@@ -35,6 +35,12 @@ Dieselben wie in der Notch, alle ohne Konto und Schlüssel (`src-tauri/src/feed.
 
 Abgefragtes wird zwischengespeichert (vergangene Tage 6 h, kommende 30 min, heute 1 min, Tabellen 10 min).
 
+## Updates
+
+Arena aktualisiert sich selbst wie die Notch: 20 s nach dem Start und dann alle 6 h fragt sie `https://github.com/NojoMcDybo/arena/releases/latest/download/latest.json`. Gibt es eine neue Version, leuchtet ein Punkt am Zahnrad; Einstellungen › App › **Installieren** lädt sie, prüft die Signatur (öffentlicher Schlüssel in `tauri.conf.json`, derselbe wie bei der Notch) und startet Arena neu.
+
+Veröffentlichen: Version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` und `src-tauri/tauri.conf.json` erhöhen, committen, Tag `v<version>` pushen. `.github/workflows/release.yml` baut, signiert (Secret `TAURI_SIGNING_PRIVATE_KEY`; der private Schlüssel liegt nur unter `%USERPROFILE%\.tauri\nojo-updater.key`) und hängt Installer und `latest.json` an das Release.
+
 ## Bauen
 
 ```powershell

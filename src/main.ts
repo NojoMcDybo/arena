@@ -461,6 +461,46 @@ function openSettings() {
   renderSheetSettings();
 }
 
+// ---------- Updates (update.rs) ----------
+
+type Upd = { status: "idle" | "checking" | "current" | "available" | "downloading" | "error"; version?: string; current: string; message?: string };
+let upd: Upd = { status: "idle", current: "" };
+
+/** Punkt am Zahnrad: es gibt eine neue Version */
+function renderUpd() {
+  const g = q(".gear");
+  g.querySelector(".n-dot")?.remove();
+  if (upd.status === "available") g.append(el("i", "n-dot"));
+  g.title = upd.status === "available" ? `Einstellungen · Arena ${upd.version} verfügbar` : "Einstellungen";
+  const box = q(".app-card");
+  if (box) box.replaceWith(appCard());
+}
+
+function appCard() {
+  const c = el("section", "s-card n-card app-card");
+  const h = el("div", "s-head");
+  h.append(el("span", "n-eyebrow", "App"), el("span", "faint", upd.current ? `Arena ${upd.current}` : "Arena"));
+  const text = {
+    idle: "Sucht beim Start und alle 6 Stunden nach Updates.",
+    checking: "Sucht …",
+    current: "Aktuell.",
+    available: `Version ${upd.version} ist da.`,
+    downloading: "Wird geladen – Arena startet gleich neu …",
+    error: upd.message ?? "Update-Prüfung fehlgeschlagen.",
+  }[upd.status];
+  const row = el("div", "app-row");
+  row.append(el("span", upd.status === "error" ? "faint err" : "faint", text));
+  const b = el("button", "n-btn" + (upd.status === "available" ? " primary" : ""), upd.status === "available" ? "Installieren" : "Nach Updates suchen");
+  b.disabled = upd.status === "checking" || upd.status === "downloading";
+  b.addEventListener("click", () => {
+    if (upd.status === "available") void invoke("update_install").catch(() => {});
+    else void invoke<Upd>("update_check").then((u) => { upd = u; renderUpd(); }).catch(() => {});
+  });
+  row.append(b);
+  c.append(h, row);
+  return c;
+}
+
 function renderSheetSettings() {
   if (sheetKind !== "settings") return;
   renderSettings(q(".sheet-body"), {
@@ -473,6 +513,7 @@ function renderSheetSettings() {
       onSettings(false);
     },
   });
+  q(".sheet-body").append(appCard());
 }
 
 async function openTeam(t: FavTeam) {
@@ -582,6 +623,9 @@ async function main() {
   lastLeagues = snap.sport.leagues.join(",");
   leagues = await invoke<LeagueInfo[]>("sport_leagues").catch(() => []);
   await listen<Snapshot>("settings", (e) => { snap = e.payload; onSettings(); });
+  await listen<Upd>("update", (e) => { upd = e.payload; renderUpd(); });
+  upd = await invoke<Upd>("update_state").catch(() => upd);
+  renderUpd();
   await listen<SportState>("sport", (e) => {
     live = e.payload;
     if (view === "live") renderLive();

@@ -31,6 +31,8 @@ svg { display: block; }
 .sync.ok .dot { background: var(--n-ok); box-shadow: 0 0 8px var(--n-ok); }
 .sync.wait .dot { background: var(--n-warn); }
 .gear { width: 30px; height: 30px; }
+.app-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 12px; }
+.app-row .err { color: var(--n-low); }
 
 main { height: 100%; overflow-y: auto; padding: 78px 28px 36px; }
 .view { max-width: 1120px; margin: 0 auto; }
