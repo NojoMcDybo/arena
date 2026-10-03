@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arena</title>
+    <link rel="stylesheet" href="/src/nojo/nojo-ui.css" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body class="n-window">
+    <!-- rahmenloses Fenster: Kopf zum Ziehen; Reiter, Abgleich mit der Notch und Einstellungen schweben als
+         Liquid Glass ueber dem Inhalt, der darunter durchscrollt. Fensterknoepfe als Glaspille (main.ts). -->
+    <header class="top" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>Arena</div>
+      <nav class="tabs n-seg n-liquid panel" role="tablist" aria-label="Ansicht">
+        <button role="tab" data-view="live">Live</button>
+        <button role="tab" data-view="plan">Spielplan</button>
+        <button role="tab" data-view="table">Tabelle</button>
+        <button role="tab" data-view="teams">Teams</button>
+      </nav>
+      <div class="top-right">
+        <span class="sync n-glass n-liquid" role="status"><i class="dot"></i><span>Notch</span></span>
+        <button class="n-ico sm n-glass n-liquid gear" title="Einstellungen" aria-label="Einstellungen"></button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Live: alle Spiele von heute als Leiste, darunter das gewaehlte gross mit Spielfeld und Ticker -->
+      <section class="view" data-view="live">
+        <div class="strip" aria-label="Spiele heute"></div>
+        <div class="focus"></div>
+      </section>
+
+      <!-- Spielplan: eine Woche zurueck, drei Wochen voraus -->
+      <section class="view" data-view="plan" hidden>
+        <div class="filters">
+          <div class="n-seg plan-scope" role="group" aria-label="Spiele">
+            <button data-scope="all">Alle</button>
+            <button data-scope="fav">Meine Teams</button>
+          </div>
+          <div class="chips plan-leagues"></div>
+        </div>
+        <div class="plan"></div>
+      </section>
+
+      <!-- Tabelle -->
+      <section class="view" data-view="table" hidden>
+        <div class="filters"><div class="chips table-leagues"></div></div>
+        <div class="tables"></div>
+      </section>
+
+      <!-- Teams: naechstes Spiel und Form deiner Teams -->
+      <section class="view" data-view="teams" hidden>
+        <div class="team-grid"></div>
+      </section>
+    </main>
+
+    <!-- Seitenblatt (Einstellungen, Team aus der Tabelle) -->
+    <div class="backdrop" hidden>
+      <aside class="sheet n-liquid panel" data-refract="10" role="dialog" aria-modal="true">
+        <div class="sheet-head">
+          <h2 class="sheet-title"></h2>
+          <button class="n-ico sm sheet-x" title="Schließen (Esc)" aria-label="Schließen"></button>
+        </div>
+        <div class="sheet-body"></div>
+      </aside>
+    </div>
+    <div class="sr" aria-live="polite"></div>
+  </body>
+</html>
