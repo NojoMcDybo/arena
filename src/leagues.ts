@@ -15,7 +15,7 @@ export type LeagueMeta = { id: string; logo: string; dark: string };
 const FALLBACK: Record<string, string> = {
   bl1: "#e2001a", bl2: "#e2001a", bl3: "#7f8c99", dfb: "#00a85a", ffb1: "#d6336c", dfbteam: "#f2c94c", turnier: "#8e6be8",
   ucl: "#2f5bd3", uel: "#ff6900", uecl: "#16c172", epl: "#7a3fbf", laliga: "#ff4b44", seriea: "#1f8fd6", ligue1: "#cddc39",
-  nfl: "#3a6ee8", nba: "#e0383e", nhl: "#a7b0b8", mlb: "#2f6fd6",
+  nfl: "#3a6ee8", nba: "#e0383e", wnba: "#ff6f20", nhl: "#a7b0b8", mlb: "#2f6fd6", test: "#5fb3a1",
 };
 
 const meta = new Map<string, LeagueMeta>();

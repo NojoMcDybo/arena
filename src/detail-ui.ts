@@ -11,6 +11,7 @@
  * - Stadion von oben und von der Seite mit Platzzahl, Schiedsrichter, Zuschauer
  */
 
+import type { CardId } from "./layout";
 import { crestEl, type SportMatch, type SportTeam } from "./sport-ui";
 import { radarEl, scale, type RadarSeries } from "./radar";
 import { stadiumBody, type Venue } from "./stadium";
@@ -304,13 +305,18 @@ export function stadiumCard(m: SportMatch, d: MatchDetail | null, venue: Venue |
 }
 
 /** Alle Karten zum Spiel, aufgeteilt auf die beiden Spalten der Live-Ansicht — immer vollstaendig */
-export function detailCards(m: SportMatch, d: MatchDetail | null, venue: Venue | null, venueLoading: boolean): { main: HTMLElement[]; side: HTMLElement[] } {
-  const main: HTMLElement[] = [];
-  const side: HTMLElement[] = [];
-  if (m.state === "pre") main.push(oddsCard(m, d), formCard(m, d));
-  if (m.sport === "soccer") main.push(pulseCard(m, d));
-  main.push(statsCard(m, d), teamRadarCard(m, d));
-  if (m.state === "pre") side.push(h2hCard(d));
-  side.push(lineupCard(m, d), stadiumCard(m, d, venue, venueLoading));
-  return { main, side };
+/** alle Analyse-Karten mit festem Schluessel (layout.ts ordnet sie an; was eine Phase nicht braucht, ist dort
+ * ausgeblendet und laesst sich zurueckholen) */
+export function detailCards(m: SportMatch, d: MatchDetail | null, venue: Venue | null, venueLoading: boolean): Map<CardId, HTMLElement> {
+  const out = new Map<CardId, HTMLElement>([
+    ["odds", oddsCard(m, d)],
+    ["form", formCard(m, d)],
+    ["h2h", h2hCard(d)],
+    ["stats", statsCard(m, d)],
+    ["radar", teamRadarCard(m, d)],
+    ["lineup", lineupCard(m, d)],
+    ["stadium", stadiumCard(m, d, venue, venueLoading)],
+  ]);
+  if (m.sport === "soccer") out.set("pulse", pulseCard(m, d));
+  return out;
 }

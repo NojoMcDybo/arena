@@ -1,6 +1,6 @@
 [package]
 name = "arena"
-version = "0.2.4"
+version = "0.2.5"
 description = "Arena - Live-Sport, Spielplan und Tabellen"
 authors = ["Nojo"]
 edition = "2021"

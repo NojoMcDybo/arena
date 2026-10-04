@@ -26,8 +26,13 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: var(--n-bg); }
-body { user-select: none; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+html { background: var(--n-bg); }
+/* durchsichtig, damit der Nebel (z-index -1) unter dem Inhalt, aber ueber dem Fenstergrund liegt */
+body, body.n-window { user-select: none; background: transparent; }
+/* Nebel in den Ligafarben (fog.ts) hinter allem; z-index -1 liegt ueber dem Fenstergrund, unter dem Inhalt */
+.fog { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: 0.55; }
+:root[data-theme="light"] .fog { opacity: 0.6; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; text-align: inherit; }
 h2, h3, p { margin: 0; }
 svg { display: block; }
@@ -37,16 +42,16 @@ svg { display: block; }
 .pad { padding: 40px 0; text-align: center; }
 
 /* ---------- Kopf: Raster Marke | Reiter | Werkzeuge; rechts Platz fuer die Fensterknoepfe ---------- */
-.top { position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: var(--top); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; padding: 0 128px 0 var(--pad-x); background: linear-gradient(180deg, var(--n-bg) 55%, transparent); }
+.top { position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: var(--top); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; padding: 0 128px 0 var(--pad-x); background: linear-gradient(180deg, color-mix(in oklch, var(--n-bg) 78%, transparent) 45%, transparent); }
 body.full .top { padding-right: var(--pad-x); }
 body.full .n-wc { display: none; }
 .brand { font: 650 21px/1 var(--n-font-display); letter-spacing: -0.6px; }
 .tabs { width: clamp(300px, 36vw, 460px); }
 .tabs button { padding: 8px 6px; font-size: 12.5px; text-align: center; justify-content: center; }
 .n-seg > button { text-align: center; }
-/* Vollbild oder maximiert: das Fenster liegt an der oberen Kante, wo die Notch sitzt -> Reiter neben die Marke */
-body.full .top, body.max .top { grid-template-columns: auto auto 1fr; }
-body.full .tabs, body.max .tabs { justify-self: start; margin-left: 10px; }
+/* Vollbild, maximiert oder die Notch liegt ueber dem Kopf (notch-align.ts): Reiter neben die Marke */
+body.full .top, body.max .top, body.notched .top { grid-template-columns: auto auto 1fr; }
+body.full .tabs, body.max .tabs, body.notched .tabs { justify-self: start; margin-left: 10px; }
 .top-right { justify-self: end; display: flex; align-items: center; gap: 8px; }
 .sync { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 12px; color: var(--n-dim); }
 .sync .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--n-faint); }
@@ -63,7 +68,7 @@ body.full .tabs, body.max .tabs { justify-self: start; margin-left: 10px; }
 .app-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 12px; }
 .app-row .err { color: var(--n-low); }
 
-main { height: 100%; overflow-y: auto; padding: 78px var(--pad-x) 36px; }
+main { height: 100%; overflow-y: auto; padding: 78px calc(var(--pad-x) + var(--notch-r, 0px)) 36px calc(var(--pad-x) + var(--notch-l, 0px)); }
 .view { max-width: var(--content); margin: 0 auto; }
 
 /* ---------- Karte: der eine Aufbau ---------- */
@@ -125,7 +130,10 @@ main { height: 100%; overflow-y: auto; padding: 78px var(--pad-x) 36px; }
 .big-clock { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--n-dim); }
 .big-clock.in { color: var(--n-ink); }
 .big-clock.in::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 8px var(--live); animation: live-dot 1.6s ease-in-out infinite; }
-.big-score { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: clamp(18px, 3vw, 48px); padding: 4px 0 12px; }
+.big-score { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: clamp(18px, 3vw, 48px); padding: 4px 0 12px;
+  translate: var(--score-dx, 0px) 0; transition: translate 0.45s var(--n-ease); }
+/* an der Notch ausgerichtet (notch-align.ts): Spaltengrenze genau unter ihrer Mittelachse */
+.focus.axis .big-body { grid-template-columns: var(--split-l) var(--split-r); }
 .big-side { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
 .big-side:first-child { justify-self: end; }
 .big-side:last-child { justify-self: start; }
@@ -140,6 +148,32 @@ main { height: 100%; overflow-y: auto; padding: 78px var(--pad-x) 36px; }
 @media (max-width: 959px) { .big-body { grid-template-columns: minmax(0, 1fr); } }
 .col, .slot { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 .slot:empty { display: none; }
+
+/* ---------- Karten anordnen (layout.ts): Spalten als Ablageflaechen, Werkzeuge im Kartenkopf ---------- */
+.lane { min-height: 40px; border-radius: var(--r-lg); transition: background 0.2s var(--n-ease), outline-color 0.2s var(--n-ease); outline: 1.5px dashed transparent; outline-offset: 6px; }
+.big.arranging .lane { outline-color: color-mix(in oklch, var(--n-ink) 16%, transparent); }
+.big.arranging .lane:empty::before { content: "Karten hierher ziehen"; display: grid; place-items: center; height: 80px; font-size: 12px; color: var(--n-faint); }
+.arrange-slot:empty { display: none; }
+.arrange-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 12px 16px; margin-bottom: var(--gap); border-radius: var(--r-lg); }
+.ab-text { display: flex; flex-direction: column; gap: 2px; min-width: 200px; flex: 1 1 260px; }
+.ab-text b { font-size: 13px; font-weight: 650; }
+.ab-text span { font-size: 11.5px; color: var(--n-dim); }
+.ab-hidden { align-items: center; flex: 1 1 auto; }
+.ab-label { font-size: 11px; color: var(--n-faint); margin-right: 2px; }
+.ab-eye { display: inline-grid; margin-right: 5px; }
+.ab-eye svg { width: 13px; height: 13px; }
+.ab-acts { display: flex; gap: 8px; margin-left: auto; }
+.c-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; align-self: center; }
+.c-head:has(.c-tools) .c-meta { margin-left: auto; }
+.c-tool, .c-grip { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--n-dim); }
+.c-tool svg, .c-grip svg { width: 15px; height: 15px; }
+.c-tool:hover { color: var(--n-ink); background: color-mix(in oklch, var(--n-ink) 9%, transparent); }
+.c-grip { cursor: grab; }
+.c-grip:active { cursor: grabbing; }
+.big.arranging [data-card] { transition: box-shadow 0.2s var(--n-ease); }
+.big.arranging [data-card]:hover { box-shadow: 0 0 0 1px color-mix(in oklch, var(--n-ink) 14%, transparent); }
+.drag-ghost { opacity: 0.35; }
+.drag-chosen { box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45); }
 .slot-wait { padding: 8px 4px; }
 .pitch-card { padding-bottom: 14px; }
 .ticker-card .sp-ticker { max-height: min(560px, 60vh); overflow-y: auto; scrollbar-width: none; }

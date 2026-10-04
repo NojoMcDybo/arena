@@ -108,6 +108,41 @@ fn export_ics(app: AppHandle, name: String, ics: String) -> Result<String, Strin
     Ok(p)
 }
 
+/// Wo die Notch liegt, in logischen Pixeln relativ zur Innenflaeche dieses Fensters (fuer die Ausrichtung).
+/// Die Notch sitzt am Hauptmonitor oben in der Mitte (bzw. links/rechts, Notch-config.json "dock"); als Flaeche
+/// gilt ihre kompakte Form samt Ohren (340 × 34, seitlich 44 × 280 — notch/src/main.ts SIZE/SIDE).
+#[derive(serde::Serialize)]
+struct NotchRect {
+    dock: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[tauri::command]
+fn notch_rect(app: AppHandle, window: tauri::WebviewWindow) -> Option<NotchRect> {
+    let cfg = app.path().app_data_dir().ok()?.parent()?.join("de.nojo.notch").join("config.json");
+    let v: serde_json::Value = std::fs::read(cfg).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let dock = match v["dock"].as_str() {
+        Some(d @ ("left" | "right")) => d,
+        _ => "top",
+    };
+    let m = window.primary_monitor().ok()??;
+    let ms = m.scale_factor();
+    let (mx, my) = (m.position().x as f64, m.position().y as f64);
+    let (mw, mh) = (m.size().width as f64, m.size().height as f64);
+    let (w, h) = if dock == "top" { (340.0 * ms, 34.0 * ms) } else { (44.0 * ms, 280.0 * ms) };
+    let (x, y) = match dock {
+        "left" => (mx, my + (mh - h) / 2.0),
+        "right" => (mx + mw - w, my + (mh - h) / 2.0),
+        _ => (mx + (mw - w) / 2.0, my),
+    };
+    let p = window.inner_position().ok()?;
+    let s = window.scale_factor().ok()?;
+    Some(NotchRect { dock: dock.into(), x: (x - p.x as f64) / s, y: (y - p.y as f64) / s, w: w / s, h: h / s })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -142,6 +177,7 @@ pub fn run() {
             take_pending,
             open_link,
             export_ics,
+            notch_rect,
         ])
         .setup(|app| {
             let h = app.handle().clone();

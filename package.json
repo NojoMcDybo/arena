@@ -1,7 +1,7 @@
 {
   "name": "arena",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "onnxruntime-web": "1.30.0"
+    "onnxruntime-web": "1.30.0",
+    "sortablejs": "1.15.6"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",
+    "@types/sortablejs": "1.15.8",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
   }

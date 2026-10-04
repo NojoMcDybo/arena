@@ -18,6 +18,10 @@ import { bugEl, clockOf, Court, crestEl, kickoff, Pitch, scoreOf, tickerEl, type
 import { morph } from "./morph";
 import { CrestDots } from "./halftone";
 import { leagueColor, leagueIcon, loadLeagueMeta } from "./leagues";
+import { Fog } from "./fog";
+import { alignLive, refreshNotch } from "./notch-align";
+import Sortable from "sortablejs";
+import { arrange, CARD_NAME, move, PHASE_NAME, phaseOf, reset as resetLayout, save as saveLayout, type CardId, type Lanes } from "./layout";
 import { radarEl, scale } from "./radar";
 import type { Venue } from "./stadium";
 import { crestOf, DEFAULT_SPORT, renderSettings, type FavTeam, type LeagueInfo, type Snapshot } from "./settings-ui";
@@ -230,13 +234,14 @@ function renderLive() {
     morph(box, [focusEl(f)]);
   }
   renderDetail(f);
+  alignLive();
 }
 
 /** Wappen beider Teams als Punkteraster im Hintergrund */
 const crestDots = new CrestDots();
 
 function focusEl(f: SportMatch) {
-  const wrap = el("article", `big ${f.state}`);
+  const wrap = el("article", `big ${f.state}` + (arranging ? " arranging" : ""));
   wrap.dataset.key = f.key;
   wrap.style.setProperty("--hc", f.home.color);
   wrap.style.setProperty("--ac", f.away.color);
@@ -252,6 +257,14 @@ function focusEl(f: SportMatch) {
     open.onclick = () => void invoke("open_link", { url: f.link }).catch(() => {});
     head.append(open);
   }
+  const ar = el("button", "n-ico sm n-glass n-liquid arrange-btn" + (arranging ? " on" : ""));
+  ar.dataset.key = "arrange";
+  ar.innerHTML = icon(arranging ? "check" : "layout");
+  ar.title = arranging ? "Anordnung fertig" : "Karten anordnen";
+  ar.setAttribute("aria-label", ar.title);
+  ar.setAttribute("aria-pressed", String(arranging));
+  ar.onclick = () => setArranging(!arranging);
+  head.append(ar);
   const score = el("div", "big-score");
   score.title = `${f.home.name} – ${f.away.name}`;
   const num = el("div", "big-num");
@@ -261,38 +274,142 @@ function focusEl(f: SportMatch) {
   const side = (t: SportTeam) => { const s = el("div", "big-side"); s.append(crestEl(t, "crest big-crest"), name(t)); return s; };
   score.append(side(f.home), num, side(f.away));
 
-  // zwei Spalten: links Spielfeld und Analyse, rechts Ticker, Aufstellung, Spielort
+  // zwei Spalten, jede stapelt ihre Karten ohne Luecken; was wohin kommt, entscheidet layout.ts (renderDetail)
   const body = el("div", "big-body");
-  const main = el("div", "col col-main");
-  const aside = el("div", "col col-side");
-  // alle Elemente stehen immer da; ohne Daten bleiben sie leer (Spielfeld ohne Spieler, leeres Wurfbild)
+  const lane = (cls: string) => { const e = el("div", `col lane ${cls}`); e.dataset.key = cls; e.dataset.keep = ""; return e; };
+  const bar = el("div", "arrange-slot");
+  bar.dataset.key = "arrange-slot";
+  bar.dataset.keep = "";
+  body.append(lane("lane-main"), lane("lane-side"));
+  crestDots.set(f.home, f.away);
+  wrap.append(crestDots.el, head, score, bar, body);
+  return wrap;
+}
+
+// ---------- Karten: Spielfeld, Ticker, Analyse — angeordnet nach layout.ts, anpassbar ----------
+
+let arranging = false;
+let dragging = false;
+let layoutRev = 0;
+let lastLanes: Lanes | null = null;
+const sortables = new WeakMap<HTMLElement, Sortable>();
+
+function setArranging(on: boolean) {
+  arranging = on;
+  focusSig = "";
+  detailSig = "";
+  renderLive();
+}
+
+/** Spielfeld: Ballverlauf (Fussball) bzw. Wurfbild (Basketball); leer, solange es nichts gibt */
+function fieldCard(f: SportMatch): HTMLElement | null {
   if (f.sport === "soccer") {
     pitch.setMatch(f);
     if (f.source !== "espn") pitch.idle("Ballverlauf gibt es nur für ESPN-Wettbewerbe");
     else if (noLive(f)) pitch.idle("ESPN überträgt dieses Spiel nicht live");
-    const pw = card("Ballverlauf", "", "pitch-card");
-    pw.append(pitch.el);
-    main.append(pw);
+    const c = card("Ballverlauf", "", "pitch-card");
+    c.append(pitch.el);
+    return c;
   }
   if (f.sport === "basketball") {
     court.setMatch(f);
-    const cw = card("Wurfbild", "Treffer ● · Fehlwürfe ×", "court-card");
-    cw.append(court.el);
-    main.append(cw);
+    const c = card("Wurfbild", "Treffer ● · Fehlwürfe ×", "court-card");
+    c.append(court.el);
+    return c;
   }
-  const slot = (cls: string) => { const e = el("div", `slot ${cls}`); e.dataset.key = cls; e.dataset.keep = ""; return e; };
-  main.append(slot("slot-main"));
-  // Basketball hat keinen Ticker (die Wuerfe stehen im Wurfbild)
-  if (f.sport !== "basketball") {
-    const tk = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
-    tk.append(tickerEl(f, 24));
-    aside.append(tk);
+  return null;
+}
+
+function tickerCard(f: SportMatch) {
+  const c = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
+  c.append(tickerEl(f, 24));
+  return c;
+}
+
+function applyLayout(f: SportMatch, l: Lanes) {
+  saveLayout(f.sport, f.state, l);
+  layoutRev++;
+  detailSig = "";
+  renderDetail(f);
+}
+
+/** Werkzeuge einer Karte beim Anordnen: Griff, hoch, runter, andere Spalte, ausblenden */
+function cardTools(f: SportMatch, l: Lanes, id: CardId, lane: "main" | "side") {
+  const t = el("div", "c-tools");
+  t.dataset.key = "tools";
+  const grip = el("span", "c-grip");
+  grip.innerHTML = icon("grip");
+  grip.title = "Ziehen zum Verschieben";
+  const b = (name: Parameters<typeof icon>[0], title: string, how: Parameters<typeof move>[2]) => {
+    const x = el("button", "c-tool");
+    x.dataset.key = how;
+    x.innerHTML = icon(name);
+    x.title = title;
+    x.setAttribute("aria-label", `${CARD_NAME[id]}: ${title}`);
+    x.onclick = (e) => { e.stopPropagation(); applyLayout(f, move(l, id, how)); };
+    return x;
+  };
+  t.append(grip, b("up", "Nach oben", "up"), b("down", "Nach unten", "down"),
+    b(lane === "main" ? "next" : "prev", lane === "main" ? "In die rechte Spalte" : "In die linke Spalte", "swap"),
+    b("eye-off", "Ausblenden", "hide"));
+  return t;
+}
+
+/** Leiste beim Anordnen: wofuer die Anordnung gilt, ausgeblendete Karten zurueckholen, Standard, Fertig */
+function arrangeBar(f: SportMatch, l: Lanes & { custom: boolean }) {
+  const bar = el("div", "arrange-bar n-glass n-liquid");
+  bar.dataset.key = "arrange-bar";
+  const t = el("div", "ab-text");
+  t.append(el("b", "", `Anordnung · ${SPORT_NAME[f.sport] ?? f.sport} ${PHASE_NAME[phaseOf(f.state)]}`),
+    el("span", "", "Karten am Griff ziehen oder mit den Pfeilen verschieben"));
+  bar.append(t);
+  if (l.hidden.length) {
+    const chips = el("div", "chips ab-hidden");
+    chips.append(el("span", "ab-label", "Ausgeblendet"));
+    for (const id of l.hidden) {
+      const lead = el("span", "ab-eye");
+      lead.innerHTML = icon("eye");
+      chips.append(chip(CARD_NAME[id], false, () => applyLayout(f, move(l, id, "show")), "Wieder anzeigen", lead));
+    }
+    bar.append(chips);
   }
-  aside.append(slot("slot-side"));
-  body.append(main, aside);
-  crestDots.set(f.home, f.away);
-  wrap.append(crestDots.el, head, score, body);
-  return wrap;
+  const acts = el("div", "ab-acts");
+  const std = el("button", "n-btn ghost", "Standard");
+  std.dataset.key = "std";
+  std.disabled = !l.custom;
+  std.title = "Standard-Anordnung für diese Sportart und Phase";
+  std.onclick = () => { resetLayout(f.sport, f.state); layoutRev++; detailSig = ""; renderDetail(f); };
+  const done = el("button", "n-btn", "Fertig");
+  done.dataset.key = "done";
+  done.onclick = () => setArranging(false);
+  acts.append(std, done);
+  bar.append(acts);
+  return bar;
+}
+
+/** Ziehen zwischen den Spalten (SortableJS); nur beim Anordnen aktiv */
+function sortableFor(lane: HTMLElement) {
+  let s = sortables.get(lane);
+  if (!s) {
+    s = Sortable.create(lane, {
+      group: "arena-cards",
+      handle: ".c-grip",
+      draggable: "[data-card]",
+      animation: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180,
+      ghostClass: "drag-ghost",
+      chosenClass: "drag-chosen",
+      onStart: () => { dragging = true; },
+      onEnd: () => {
+        dragging = false;
+        const f = focusMatch();
+        if (!f) return;
+        const ids = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(`${sel} > [data-card]`)).map((c) => c.dataset.card as CardId);
+        applyLayout(f, { main: ids(".lane-main"), side: ids(".lane-side"), hidden: lastLanes?.hidden ?? [] });
+      },
+    });
+    sortables.set(lane, s);
+  }
+  s.option("disabled", !arranging);
 }
 
 // Analyse zum gewaehlten Spiel (info.rs); laufend alle 30 s, sonst selten
@@ -316,31 +433,48 @@ function venueFor(d: MatchDetail | undefined): { v: Venue | null; loading: boole
 }
 
 function renderDetail(f: SportMatch) {
-  const main = q(".slot-main"), side = q(".slot-side");
-  if (!main || !side) return;
-  if (f.key.startsWith("oldb/")) {
-    // OpenLigaDB: keine Analyse — die Karten stehen trotzdem da, leer
-    if (detailSig !== `oldb:${f.key}`) { detailSig = `oldb:${f.key}`; const { main: a, side: b } = detailCards(f, null, null, false); morph(main, a); morph(side, b); }
-    return;
+  const lm = q(".lane-main"), ls = q(".lane-side"), slot = q(".arrange-slot");
+  if (!lm || !ls || !slot || dragging) return;
+  // OpenLigaDB: keine Analyse — die Karten stehen trotzdem da, leer
+  const espn = !f.key.startsWith("oldb/");
+  if (espn) {
+    const c = details.get(f.key);
+    const maxAge = f.state === "in" ? 30_000 : f.state === "pre" ? 600_000 : 3_600_000;
+    if ((!c || Date.now() - c.at > maxAge) && !c?.loading) {
+      details.set(f.key, { ...(c ?? { at: 0 }), loading: true });
+      const key = f.key;
+      invoke<MatchDetail>("match_detail", { key, state: f.state })
+        .then((d) => details.set(key, { at: Date.now(), d }))
+        .catch((e) => details.set(key, { at: Date.now(), err: String(e), d: c?.d }))
+        .finally(() => { const now = focusMatch(); if (view === "live" && now?.key === key) renderDetail(now); });
+    }
   }
-  const c = details.get(f.key);
-  const maxAge = f.state === "in" ? 30_000 : f.state === "pre" ? 600_000 : 3_600_000;
-  if ((!c || Date.now() - c.at > maxAge) && !c?.loading) {
-    details.set(f.key, { ...(c ?? { at: 0 }), loading: true });
-    const key = f.key;
-    invoke<MatchDetail>("match_detail", { key, state: f.state })
-      .then((d) => details.set(key, { at: Date.now(), d }))
-      .catch((e) => details.set(key, { at: Date.now(), err: String(e), d: c?.d }))
-      .finally(() => { const now = focusMatch(); if (view === "live" && now?.key === key) renderDetail(now); });
-  }
-  const cur = details.get(f.key);
-  const ven = venueFor(cur?.d);
-  const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.state === "in" ? f.clock : "", ven.loading, !!ven.v]);
+  const cur = espn ? details.get(f.key) : undefined;
+  const ven = espn ? venueFor(cur?.d) : { v: null, loading: false };
+  const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.clock, f.home.score, f.away.score, f.events.map((e) => e.id),
+    ven.loading, !!ven.v, noLive(f), arranging, layoutRev]);
   if (sig === detailSig) return;
   detailSig = sig;
-  const { main: a, side: b } = detailCards(f, cur?.d ?? null, ven.v, ven.loading);
-  morph(main, a);
-  morph(side, b);
+  const cards = detailCards(f, cur?.d ?? null, ven.v, ven.loading);
+  const field = fieldCard(f);
+  if (field) cards.set("field", field);
+  // Basketball hat keinen Ticker (die Wuerfe stehen im Wurfbild)
+  if (f.sport !== "basketball") cards.set("ticker", tickerCard(f));
+  const l = arrange(f.sport, f.state, [...cards.keys()]);
+  lastLanes = l;
+  const put = (ids: CardId[], lane: "main" | "side") => ids.map((id) => {
+    const c = cards.get(id)!;
+    c.dataset.key = `c:${id}`;
+    c.dataset.card = id;
+    if (arranging) c.querySelector(".c-head")?.append(cardTools(f, l, id, lane));
+    return c;
+  });
+  morph(lm, put(l.main, "main"));
+  morph(ls, put(l.side, "side"));
+  morph(slot, arranging ? [arrangeBar(f, l)] : []);
+  sortableFor(lm);
+  sortableFor(ls);
+  alignLive();
 }
 
 /** Kein Spiel heute: das naechste (deine Teams zuerst) mit Countdown */
@@ -1190,6 +1324,7 @@ function renderSheetTeam() {
 // ---------- Einstellungen / Abgleich ----------
 
 function renderSync() {
+  void refreshNotch(snap.notch);
   const s = q(".sync");
   s.classList.toggle("ok", snap.notch);
   s.classList.toggle("wait", !snap.notch && snap.pending);
@@ -1411,7 +1546,8 @@ async function main() {
   segments(document, ".n-seg");
   lightScroller(q("main"), { insetTop: 74 });
   void syncWindow();
-  void win.onResized(() => void syncWindow()).catch(() => {});
+  void win.onResized(() => { void syncWindow(); void refreshNotch(snap.notch); }).catch(() => {});
+  void win.onMoved(() => void refreshNotch(snap.notch)).catch(() => {});
 
   document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view as View)));
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) =>
@@ -1432,7 +1568,7 @@ async function main() {
       if (view === "live" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { stepMatch(e.key === "ArrowRight" ? 1 : -1); e.preventDefault(); return; }
       if ((view === "plan" || view === "leagues") && e.key.toLowerCase() === "h") { goToday(); return; }
     }
-    if (e.key === "Escape") { if (sheetKind) closeSheet(); else if (isFull) void setFull(false); }
+    if (e.key === "Escape") { if (sheetKind) closeSheet(); else if (arranging) setArranging(false); else if (isFull) void setFull(false); }
     if (e.key === "F11") { e.preventDefault(); void setFull(!isFull); }
     if (e.ctrlKey && /^[1-4]$/.test(e.key)) setView(VIEWS[Number(e.key) - 1]);
   });
@@ -1477,7 +1613,16 @@ async function main() {
   // Spielplan im Hintergrund vorbereiten (fuer „Als Nächstes“, Spielplan und Ligen)
   if (view !== "plan") void loadPlan(false, true);
   setInterval(tickWatch, 1000);
+  // Nebel: alle gewaehlten Ligen (auch die automatischen) in ihrer Farbe
+  const fog = new Fog();
+  document.body.prepend(fog.el);
+  const tint = () => fog.setColors(chosen().map(leagueColor));
+  tint();
+  setInterval(tint, 1500);
   setInterval(() => { if (view === "live") { focusSig = ""; renderLive(); } }, 30_000);
+  // Notch: Lage beim Start, bei jedem Abgleich und alle paar Sekunden (Umdocken)
+  void refreshNotch(snap.notch);
+  setInterval(() => void refreshNotch(snap.notch), 4000);
 }
 
 main();
