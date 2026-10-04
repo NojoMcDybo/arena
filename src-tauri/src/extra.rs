@@ -76,12 +76,13 @@ fn ttl_for(day_ms: u64, now: u64) -> Duration {
 // ---------- Spielplan ----------
 
 fn tag(mut ms: Vec<Match>, l: &League) -> Vec<Match> {
-    let favs = feed::cfg().favs;
-    ms.retain(|m| l.team.is_none_or(|t| m.home.name == t || m.away.name == t));
+    let c = feed::cfg();
+    let favs = &c.favs;
+    ms.retain(|m| feed::shows(l, m, &c));
     for m in ms.iter_mut() {
         m.league = l.id.into();
         m.league_name = l.name.into();
-        m.fav = feed::is_fav(&m.home, &favs) || feed::is_fav(&m.away, &favs);
+        m.fav = feed::is_fav(&m.home, favs) || feed::is_fav(&m.away, favs);
     }
     ms
 }
@@ -262,7 +263,7 @@ pub async fn standings(league: String) -> Result<Vec<Group>, String> {
         let favs = feed::cfg().favs;
         let ttl = Duration::from_secs(600);
         let mut out = Vec::new();
-        if let Some(path) = l.espn.first().filter(|_| l.team.is_none() && l.id != "dfb") {
+        if let Some(path) = l.espn.first().filter(|_| l.team.is_none() && l.id != "dfb" && l.id != feed::FRIENDLY) {
             let v = cached(&agent, &format!("https://site.api.espn.com/apis/v2/sports/{}/{path}/standings", l.sport), ttl)?;
             espn_groups(&v, l.sport, &favs, &mut out);
             if out.len() == 1 {
@@ -332,7 +333,7 @@ fn flatten_scores(v: &mut Value) {
 /// In welcher ESPN-Liga spielt dieses Team? (gewaehlte Wettbewerbe zuerst, dann alle Vereinsligen)
 pub(crate) fn home_paths(agent: &ureq::Agent, sport: &str, id: &str) -> Vec<&'static str> {
     let chosen = feed::cfg().leagues;
-    let mut ls: Vec<&League> = LEAGUES.iter().filter(|l| l.sport == sport && l.team.is_none() && l.id != "turnier").collect();
+    let mut ls: Vec<&League> = LEAGUES.iter().filter(|l| l.sport == sport && l.team.is_none() && l.id != "turnier" && l.id != feed::FRIENDLY).collect();
     ls.sort_by_key(|l| !chosen.iter().any(|c| c == l.id));
     for l in ls {
         for path in l.espn {
@@ -359,7 +360,12 @@ pub async fn team_view(key: String) -> Result<TeamView, String> {
             let v = cached(&agent, &format!("{OLDB}/getmatchesbyteamid/{id}/6/6"), Duration::from_secs(600))?;
             all = feed::parse_oldb(&v, "team", now);
         } else {
-            for path in home_paths(&agent, sport, id) {
+            // Vereine: dazu ihre Testspiele
+            let mut paths = home_paths(&agent, sport, id);
+            if sport == "soccer" && paths.len() == 1 {
+                paths.push("club.friendly");
+            }
+            for path in paths {
                 for q in ["?fixture=true", ""] {
                     let url = format!("{ESPN}/{sport}/{path}/teams/{id}/schedule{q}");
                     let ttl = Duration::from_secs(if q.is_empty() { 1800 } else { 600 });

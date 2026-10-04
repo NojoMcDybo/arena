@@ -12,7 +12,7 @@
 //!   "sport-plays"  { key, reset, plays }         Ballaktionen des angesehenen Spiels
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -56,14 +56,25 @@ pub const LEAGUES: &[League] = &[
     League { id: "laliga", name: "LaLiga", group: "Europa", sport: "soccer", espn: &["esp.1"], oldb: None, team: None },
     League { id: "seriea", name: "Serie A", group: "Europa", sport: "soccer", espn: &["ita.1"], oldb: None, team: None },
     League { id: "ligue1", name: "Ligue 1", group: "Europa", sport: "soccer", espn: &["fra.1"], oldb: None, team: None },
+    // automatisch dabei (nicht waehlbar): Testspiele der Vereine aus den gewaehlten Ligen und der Lieblingsteams
+    League { id: FRIENDLY, name: "Testspiele", group: "Vereine", sport: "soccer", espn: &["club.friendly"], oldb: None, team: None },
     League { id: "nfl", name: "NFL", group: "US-Sport", sport: "football", espn: &["nfl"], oldb: None, team: None },
     League { id: "nba", name: "NBA", group: "US-Sport", sport: "basketball", espn: &["nba"], oldb: None, team: None },
+    League { id: "wnba", name: "WNBA", group: "US-Sport", sport: "basketball", espn: &["wnba"], oldb: None, team: None },
     League { id: "nhl", name: "NHL", group: "US-Sport", sport: "hockey", espn: &["nhl"], oldb: None, team: None },
     League { id: "mlb", name: "MLB", group: "US-Sport", sport: "baseball", espn: &["mlb"], oldb: None, team: None },
 ];
 
+/// Testspiele: keine eigene Wahl, sondern Teil der Vereinsligen (siehe cfg() und shows())
+pub(crate) const FRIENDLY: &str = "test";
+
 pub(crate) fn league(id: &str) -> Option<&'static League> {
     LEAGUES.iter().find(|l| l.id == id)
+}
+
+/// Vereinsliga (keine Laenderspiele, keine Testspiele)
+fn club_league(id: &str) -> bool {
+    league(id).is_some_and(|l| l.sport == "soccer" && l.team.is_none() && l.id != "turnier" && l.id != FRIENDLY)
 }
 
 // ---------- Daten fuer die Notch ----------
@@ -613,6 +624,13 @@ pub(crate) fn cfg() -> Cfg {
         .as_array()
         .map(|a| a.iter().map(|t| (s(&t["key"]), s(&t["name"]))).filter(|t| !t.0.is_empty()).collect())
         .unwrap_or_default();
+    // Testspiele kommen von selbst dazu, sobald eine Vereinsliga oder ein Fussball-Lieblingsteam gewaehlt ist
+    let mut leagues: Vec<String> = leagues;
+    let favs: Vec<(String, String)> = favs;
+    let clubs = leagues.iter().any(|l| club_league(l)) || favs.iter().any(|(k, _)| k.starts_with("soccer:") || k.starts_with("oldb:"));
+    if clubs && !leagues.iter().any(|l| l == FRIENDLY) {
+        leagues.push(FRIENDLY.into());
+    }
     Cfg {
         on: v["on"].as_bool().unwrap_or(true),
         leagues,
@@ -624,6 +642,66 @@ pub(crate) fn cfg() -> Cfg {
 pub(crate) fn is_fav(t: &Team, favs: &[(String, String)]) -> bool {
     let n = norm_name(&t.name);
     favs.iter().any(|(k, name)| *k == t.id || (!n.is_empty() && norm_name(name) == n))
+}
+
+/// Mannschaften der gewaehlten Vereinsligen (ESPN-Schluessel und Namen), fuer die Testspiele
+#[derive(Default)]
+pub(crate) struct Clubs {
+    ids: HashSet<String>,
+    names: HashSet<String>,
+}
+
+static CLUB_SET: Mutex<Option<(String, Instant, Arc<Clubs>)>> = Mutex::new(None);
+
+fn clubs(c: &Cfg) -> Arc<Clubs> {
+    let ids: Vec<&String> = c.leagues.iter().filter(|l| club_league(l)).collect();
+    let sig = ids.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",");
+    if let Some((s, at, cl)) = CLUB_SET.lock().unwrap().as_ref() {
+        // Kader aendern sich selten; ein leerer Abruf (offline) wird bald wiederholt
+        let keep = if cl.ids.is_empty() && cl.names.is_empty() && !sig.is_empty() { 120 } else { 12 * 3600 };
+        if *s == sig && at.elapsed() < Duration::from_secs(keep) {
+            return cl.clone();
+        }
+    }
+    let agent = agent();
+    let mut out = Clubs::default();
+    for l in ids.iter().filter_map(|id| league(id)) {
+        for path in l.espn {
+            let Ok(v) = get_json(&agent, &format!("{ESPN}/soccer/{path}/teams")) else { continue };
+            for t in v.pointer("/sports/0/leagues/0/teams").and_then(|x| x.as_array()).into_iter().flatten() {
+                out.ids.insert(format!("soccer:{}", s(&t["team"]["id"])));
+                out.names.insert(norm_name(&s(&t["team"]["displayName"])));
+            }
+        }
+        if let (Some(sc), true) = (l.oldb, l.espn.is_empty()) {
+            let season = crate::extra::season(crate::now_ms());
+            if let Ok(v) = get_json(&agent, &format!("{OLDB}/getavailableteams/{sc}/{season}")) {
+                for t in v.as_array().into_iter().flatten() {
+                    out.names.insert(norm_name(&s(&t["teamName"])));
+                }
+            }
+        }
+    }
+    out.names.remove("");
+    let cl = Arc::new(out);
+    *CLUB_SET.lock().unwrap() = Some((sig, Instant::now(), cl.clone()));
+    cl
+}
+
+/// Zeigt diese Liga dieses Spiel? Laenderspiele nur mit der Mannschaft der Liga; Testspiele nur mit
+/// Lieblingsteams oder Vereinen aus den gewaehlten Ligen (sonst kaemen jeden Tag Dutzende fremde Spiele)
+pub(crate) fn shows(l: &League, m: &Match, c: &Cfg) -> bool {
+    if let Some(t) = l.team {
+        return m.home.name == t || m.away.name == t;
+    }
+    if l.id != FRIENDLY {
+        return true;
+    }
+    if is_fav(&m.home, &c.favs) || is_fav(&m.away, &c.favs) {
+        return true;
+    }
+    let cl = clubs(c);
+    [&m.home, &m.away].iter().any(|t| cl.ids.contains(&t.id) || cl.names.contains(&norm_name(&t.name)))
 }
 
 // ---------- Abruf ----------
@@ -946,18 +1024,40 @@ fn fetch_plays(agent: &ureq::Agent, w: &mut Watch) -> Result<Vec<(Play, String)>
 // ---------- Zustand fuer Befehle ----------
 
 static LAST: LazyLock<Mutex<Value>> = LazyLock::new(|| Mutex::new(serde_json::json!({ "matches": [] })));
-/// Spiel, das die Notch gerade aufgeklappt zeigt (+ wann zuletzt bestaetigt)
-static WATCH: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+/// Spiel, das gerade angesehen wird (+ Heimteam fuer Spiele ausserhalb des Live-Fensters, + wann zuletzt bestaetigt)
+static WATCH: Mutex<Option<(String, String, Instant)>> = Mutex::new(None);
 
 #[allow(dead_code)]
 pub fn last() -> Value {
     LAST.lock().unwrap().clone()
 }
 
-/// Die Notch zeigt dieses Spiel gerade aufgeklappt -> Ballverlauf holen (alle ~10 s erneuern)
+/// Dieses Spiel wird angesehen -> Ballverlauf bzw. Wuerfe holen (alle ~10 s erneuern). `home` (Team-Schluessel)
+/// braucht es fuer Spiele aus dem Spielplan, die nicht mehr im Live-Fenster stehen.
 #[tauri::command]
-pub fn sport_watch(key: Option<String>) {
-    *WATCH.lock().unwrap() = key.filter(|k| !k.is_empty()).map(|k| (k, Instant::now()));
+pub fn sport_watch(key: Option<String>, home: Option<String>) {
+    *WATCH.lock().unwrap() = key.filter(|k| !k.is_empty()).map(|k| (k, home.unwrap_or_default(), Instant::now()));
+}
+
+/// Vorbei und aus dem Spielplan geoeffnet: nur so viel, wie das Holen der Ballaktionen braucht
+fn past_match(key: &str, home: &str) -> Option<Match> {
+    let ok = key.len() < 80 && key.chars().all(|c| c.is_ascii_alphanumeric() || "/:._-".contains(c));
+    let (path, id) = key.split_once(':')?;
+    let sport = path.split('/').next()?;
+    let home = home.rsplit(':').next().unwrap_or("");
+    if !ok || id.is_empty() || home.is_empty() || !matches!(sport, "soccer" | "basketball") {
+        return None;
+    }
+    Some(Match {
+        key: key.into(),
+        sport: sport.into(),
+        home: Team { id: format!("{sport}:{home}"), ..Default::default() },
+        state: "post".into(),
+        pitch: sport == "soccer",
+        court: sport == "basketball",
+        source: "espn".into(),
+        ..Default::default()
+    })
 }
 
 #[derive(Serialize)]
@@ -967,6 +1067,8 @@ pub struct LeagueInfo {
     group: &'static str,
     sport: &'static str,
     source: &'static str,
+    /// kommt von selbst dazu (Testspiele), steht nicht in der Auswahl
+    auto: bool,
 }
 
 #[tauri::command]
@@ -979,6 +1081,7 @@ pub fn sport_leagues() -> Vec<LeagueInfo> {
             group: l.group,
             sport: l.sport,
             source: if l.espn.is_empty() { "OpenLigaDB" } else { "ESPN" },
+            auto: l.id == FRIENDLY,
         })
         .collect()
 }
@@ -1065,7 +1168,7 @@ pub fn spawn(app: AppHandle) {
                         let relevant: Vec<Match> = f
                             .matches
                             .iter()
-                            .filter(|m| want.iter().any(|(w, l)| w == src && l.team.is_none_or(|t| m.home.name == t || m.away.name == t)))
+                            .filter(|m| want.iter().any(|(w, l)| w == src && shows(l, m, &c)))
                             .cloned()
                             .collect();
                         f.due = now + next_poll(&relevant, now_ms);
@@ -1085,13 +1188,8 @@ pub fn spawn(app: AppHandle) {
             for (src, l) in &want {
                 let Some(f) = feeds.get(src) else { continue };
                 for m in &f.matches {
-                    if keys.contains(&m.key) || !in_window(m, now_ms) {
+                    if keys.contains(&m.key) || !in_window(m, now_ms) || !shows(l, m, &c) {
                         continue;
-                    }
-                    if let Some(t) = l.team {
-                        if m.home.name != t && m.away.name != t {
-                            continue;
-                        }
                     }
                     let mut m = m.clone();
                     m.league = l.id.into();
@@ -1110,15 +1208,14 @@ pub fn spawn(app: AppHandle) {
             });
 
             // Ballverlauf fuer das angesehene Spiel
-            let wkey = WATCH
-                .lock()
-                .unwrap()
-                .clone()
-                .filter(|(_, at)| at.elapsed() < Duration::from_secs(25))
-                .map(|(k, _)| k);
+            let wkey = WATCH.lock().unwrap().clone().filter(|(_, _, at)| at.elapsed() < Duration::from_secs(25));
             let mut plays_out: Option<(bool, Vec<Play>)> = None;
             let mut play_news: Vec<(String, Ev)> = Vec::new();
-            match wkey.as_ref().and_then(|k| list.iter().find(|m| &m.key == k && (m.pitch || m.court) && m.source == "espn" && m.state != "pre")) {
+            let watched = wkey.and_then(|(k, home, _)| match list.iter().find(|m| m.key == k) {
+                Some(m) => Some(m.clone()),
+                None => past_match(&k, &home),
+            });
+            match watched.as_ref().filter(|m| (m.pitch || m.court) && m.source == "espn" && m.state != "pre") {
                 Some(m) => {
                     if watch.key != m.key {
                         // neues Spiel: Adresse der Ballaktionen aus dem Schluessel "soccer/ger.1:123"
@@ -1442,5 +1539,31 @@ mod tests {
         assert_eq!((ms[0].home.score.as_str(), ms[0].away.score.as_str()), ("0", "1"));
         assert_eq!(ms[0].away.abbr, "BVB");
         assert_eq!(ms[0].events[0].title, "Tor für Dortmund!");
+    }
+
+    #[test]
+    fn spiel_aus_dem_spielplan() {
+        let m = past_match("basketball/nba:401902644", "basketball:28").unwrap();
+        assert!(m.court && !m.pitch && m.state == "post");
+        assert_eq!(m.home.id, "basketball:28");
+        assert!(past_match("soccer/ger.1:77", "soccer:124").unwrap().pitch);
+        assert!(past_match("soccer/ger.1:77?x=1", "soccer:124").is_none());
+        assert!(past_match("hockey/nhl:1", "hockey:3").is_none());
+        assert!(past_match("soccer/ger.1:77", "").is_none());
+    }
+
+    /// Testspiele von heute: nur Vereine aus den gewaehlten Ligen bzw. Lieblingsteams
+    #[test]
+    #[ignore]
+    fn testspiele() {
+        let c = Cfg { on: true, leagues: vec!["bl1".into(), FRIENDLY.into()], favs: vec![], only_fav: false };
+        let l = league(FRIENDLY).unwrap();
+        let v = get_json(&agent(), &format!("{ESPN}/soccer/club.friendly/scoreboard")).unwrap();
+        let ms = parse_espn(&v, "soccer", "club.friendly");
+        let shown: Vec<String> = ms.iter().filter(|m| shows(l, m, &c)).map(|m| format!("{} – {}", m.home.name, m.away.name)).collect();
+        println!("{} Testspiele, gezeigt: {shown:?}", ms.len());
+        assert!(shown.len() < ms.len());
+        let fav = Cfg { leagues: vec![FRIENDLY.into()], favs: vec![("soccer:909".into(), "FC Kopenhagen".into())], ..c };
+        assert!(ms.iter().filter(|m| shows(l, m, &fav)).all(|m| m.home.id == "soccer:909" || m.away.id == "soccer:909"));
     }
 }

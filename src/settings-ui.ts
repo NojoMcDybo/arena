@@ -18,7 +18,7 @@ export type SportSettings = {
   fullscreen: boolean;
 };
 export type Snapshot = { sport: SportSettings; notch: boolean; pending: boolean };
-export type LeagueInfo = { id: string; name: string; group: string; sport: string; source: string };
+export type LeagueInfo = { id: string; name: string; group: string; sport: string; source: string; auto?: boolean };
 type TeamInfo = { key: string; name: string; logo: string };
 
 export const DEFAULT_SPORT: SportSettings = {

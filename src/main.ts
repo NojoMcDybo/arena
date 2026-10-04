@@ -65,7 +65,11 @@ const leagueInfo = (id: string) => leagues.find((l) => l.id === id);
 const leagueName = (id: string) => leagueInfo(id)?.name ?? id;
 const sportOf = (id: string) => leagueInfo(id)?.sport ?? "soccer";
 /** gewaehlte Wettbewerbe in der Reihenfolge der Einstellungen, nach Sportart sortiert */
-const chosen = () => [...snap.sport.leagues].sort((a, b) => SPORT_ORDER.indexOf(sportOf(a)) - SPORT_ORDER.indexOf(sportOf(b)));
+const chosen = () => {
+  // automatische Wettbewerbe (Testspiele) stehen da, sobald sie Spiele haben
+  const auto = leagues.filter((l) => l.auto && !snap.sport.leagues.includes(l.id) && [...live.matches, ...(plan ?? [])].some((m) => m.league === l.id)).map((l) => l.id);
+  return [...snap.sport.leagues, ...auto].sort((a, b) => SPORT_ORDER.indexOf(sportOf(a)) - SPORT_ORDER.indexOf(sportOf(b)));
+};
 
 /** Spielzeit 0..1 (Fussball 90 Min, sonst nach Abschnitt) — der Lichtstrich unter laufenden Spielen */
 function progress(m: SportMatch) {
@@ -147,9 +151,19 @@ function setView(v: View) {
 let focusSig = "";
 let detailSig = "";
 
+/** aus Spielplan oder Teams geoeffnet, aber (noch / nicht mehr) im Live-Fenster */
+let opened: SportMatch | null = null;
+
+function openMatch(m: SportMatch) {
+  focusKey = m.key;
+  opened = live.matches.some((x) => x.key === m.key) ? null : m;
+  if (view === "live") renderLive(); else setView("live");
+}
+
 function focusMatch(): SportMatch | undefined {
   const ms = live.matches;
   return ms.find((m) => m.key === focusKey)
+    ?? (opened?.key === focusKey ? opened : undefined)
     ?? ms.find((m) => m.state === "in" && m.fav)
     ?? ms.find((m) => m.state === "in")
     ?? ms.find((m) => m.fav)
@@ -177,7 +191,8 @@ function tile(m: SportMatch, on: boolean) {
 /** Spiele von heute, nach Wettbewerb gruppiert (die Wettbewerbsnamen zeigt nur die breite Spalte) */
 function renderStrip(f: SportMatch | undefined) {
   const strip = q(".strip");
-  const ms = live.matches;
+  const extra = opened && !live.matches.some((m) => m.key === opened!.key) ? [opened] : [];
+  const ms = [...extra, ...live.matches];
   const groups = new Map<string, SportMatch[]>();
   for (const m of ms) groups.set(m.league_name, [...(groups.get(m.league_name) ?? []), m]);
   const out: HTMLElement[] = [];
@@ -351,7 +366,7 @@ function tickWatch() {
   if (key !== watching || (key && Date.now() - watchAt > 8000)) {
     watching = key;
     watchAt = Date.now();
-    invoke("sport_watch", { key: key || null }).catch(() => {});
+    invoke("sport_watch", { key: key || null, home: key ? f!.home.id : null }).catch(() => {});
   }
   pitch.run(!!key && pitch.el.isConnected);
 }
@@ -403,10 +418,7 @@ function prow(m: SportMatch, opts: { league?: boolean; when?: string } = {}) {
   mid.append(crestEl(lv.home), el("b", "", lv.state === "pre" ? "–" : scoreOf(lv)), crestEl(lv.away));
   r.append(when, mid);
   if (opts.league) r.append(el("span", "p-league", lv.league_name));
-  r.onclick = () => {
-    if (live.matches.some((x) => x.key === lv.key)) { focusKey = lv.key; setView("live"); }
-    else if (lv.link) void invoke("open_link", { url: lv.link }).catch(() => {});
-  };
+  r.onclick = () => openMatch(lv);
   return r;
 }
 
@@ -516,7 +528,7 @@ function flowColumns(root: HTMLElement) {
 
 type Row = { rank: number; team: SportTeam; played: string; won: string; draw: string; lost: string; goals: string; diff: string; points: string; pct: string; behind: string; note: string; color: string; fav: boolean };
 type Group = { name: string; rows: Row[] };
-const NO_TABLE = new Set(["dfb", "dfbteam", "turnier"]);
+const NO_TABLE = new Set(["dfb", "dfbteam", "turnier", "test"]);
 let leagueSport = "";
 let leagueId = "";
 const tables = new Map<string, { at: number; groups?: Group[]; err?: string }>();
@@ -904,7 +916,7 @@ function appCard() {
 function renderSheetSettings() {
   if (sheetKind !== "settings") return;
   renderSettings(q(".sheet-body"), {
-    leagues,
+    leagues: leagues.filter((l) => !l.auto),
     snap,
     announce,
     commit: (sport) => {
