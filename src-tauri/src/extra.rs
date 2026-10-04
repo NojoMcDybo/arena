@@ -58,7 +58,7 @@ pub fn ymd(ms: u64) -> String {
 }
 
 /// Saison beginnt im Sommer (OpenLigaDB zaehlt mit dem Startjahr)
-fn season(now: u64) -> i64 {
+pub(crate) fn season(now: u64) -> i64 {
     let (y, m, _) = civil((now / DAY) as i64);
     if m >= 7 { y } else { y - 1 }
 }

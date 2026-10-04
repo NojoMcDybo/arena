@@ -20,6 +20,7 @@
         <button role="tab" data-view="teams">Teams</button>
       </nav>
       <div class="top-right" data-tauri-drag-region>
+        <button class="n-ico sm n-glass n-liquid find-btn" title="Suchen (Strg+K)" aria-label="Suchen"></button>
         <span class="sync n-glass n-liquid" role="status"><i class="dot"></i><span class="sync-t">Notch</span></span>
         <button class="n-ico sm n-glass n-liquid full-btn" title="Vollbild (F11)" aria-label="Vollbild"></button>
         <button class="n-ico sm n-glass n-liquid gear" title="Einstellungen" aria-label="Einstellungen"></button>
@@ -76,6 +77,16 @@
         <div class="sheet-body"></div>
       </aside>
     </div>
+    <!-- Schnellsuche (Strg+K): Teams, Ligen, Ansichten, Aktionen -->
+    <div class="palette-wrap" hidden>
+      <div class="palette n-liquid panel" role="dialog" aria-modal="true" aria-label="Schnellsuche">
+        <input class="pal-input n-input" type="search" placeholder="Team, Liga oder Ansicht …" spellcheck="false" autocomplete="off" />
+        <ol class="pal-list" role="listbox"></ol>
+        <p class="pal-hint">↑ ↓ wählen · Enter öffnen · Esc schließen</p>
+      </div>
+    </div>
+    <!-- Spielplan und Ligen: zurueck zum aktuellen Spieltag -->
+    <button class="today-btn n-glass n-liquid" hidden title="Zum aktuellen Spieltag (H)">Heute</button>
     <div class="sr" aria-live="polite"></div>
   </body>
 </html>

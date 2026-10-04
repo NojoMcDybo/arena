@@ -4,6 +4,7 @@
  */
 
 import { morph } from "./morph";
+import { icon } from "./nojo/nojo-ui";
 
 export type SportTeam = { id: string; name: string; short: string; abbr: string; logo: string; color: string; score: string };
 export type SportEv = { id: string; minute: string; kind: string; side: string; title: string; text: string; big: number };
@@ -36,9 +37,9 @@ function sv<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, 
   return e;
 }
 
-/** eigene Symbole statt Emoji (Emoji sehen je nach Windows-Version anders aus) */
-const BALL_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#fff"/><path fill="#111" d="m12 7.2 3.4 2.5-1.3 4h-4.2l-1.3-4zM12 2.2v3l-3.3 2.4-2.9-.9a10 10 0 0 1 6.2-4.5zm0 0a10 10 0 0 1 6.2 4.5l-2.9.9L12 5.2zM2.3 10.4l2.8.9 1.3 3.9-1.8 2.4a9.9 9.9 0 0 1-2.3-7.2zm19.4 0a9.9 9.9 0 0 1-2.3 7.2l-1.8-2.4 1.3-3.9zM8.6 21.4l.1-3h6.6l.1 3a10 10 0 0 1-6.8 0z"/></svg>`;
-const OPEN_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h9v9"/><path d="M18 6 6 18"/></svg>`;
+/** Symbole aus der Bibliothek (src/nojo, Quelle nojo-design) statt Emoji oder eigener Zeichnungen */
+const BALL_SVG = icon("ball");
+const OPEN_SVG = icon("open");
 const SPORT_GLYPH: Record<string, string> = { hockey: "●", football: "◆", basketball: "●", baseball: "●" };
 
 /** Anstoss: "20:30" heute, sonst "Sa 15:30" */
@@ -380,6 +381,12 @@ export class Pitch {
 
   get matchKey() {
     return this.key;
+  }
+
+  /** Spielfeld ohne Ballverlauf (z. B. OpenLigaDB): leer, mit Hinweis in der Glaspille */
+  idle(text: string) {
+    this.clear();
+    this.label.textContent = text;
   }
 
   private clear() {

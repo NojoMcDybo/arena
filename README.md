@@ -19,6 +19,19 @@ Tastatur: Strg+1–4 wechselt die Ansicht, **F11** Vollbild (die Fensterknöpfe 
 
 **Nicht frei verfügbar:** Marktwerte und Fußball-Transferlisten. Marktwerte gibt es praktisch nur bei Transfermarkt (keine offene Schnittstelle, Scraping verstößt gegen die Nutzungsbedingungen); ESPN liefert im Fußball keine Transaktionen. Kommerzielle Wege: API-Football (Transfers, Schlüssel nötig), Sportmonks.
 
+## Bedienung und Extras
+
+- **Schnellsuche** (Strg+K oder Lupe oben): Teams (aus Spielen, Tabellen, Favoriten), Ligen, laufende Spiele, Ansichten, Vollbild, Einstellungen – tippen, ↑/↓, Enter.
+- **Live:** ←/→ wechselt das Spiel. Alle Karten stehen immer da, ohne Daten leer (Spielfeld ohne Spieler, leeres Netz, „–“).
+  Hinter Stand und Uhr die **Wappen als Punkteraster** (Canvas, Farbe und Größe der Punkte aus dem Wappen, zur Mitte hin auslaufend).
+  **Stadion** von oben (echter Grundriss aus OpenStreetMap, massstabsgetreu mit Spielfeld) und von der Seite (Ränge nach Kapazität, Dach), Platzzahl aus Wikidata, ein Punkt je 1.000 Plätze. **Teamvergleich** als Radar (Ballbesitz, Schüsse, aufs Tor, Pass- und Zweikampfquote, Ecken).
+- **Spielplan:** jeder Tag des Zeitraums (spielfreie Tage schmal), je Tag die Ligen ohne Rahmen nebeneinander, jede in ihrer **Ligafarbe** (aus dem Logo gelesen); an der Spaltengrenze fließen die Farben ineinander (CSS-Verlauf in OKLCH). Spieltage rasten beim Scrollen in der Mitte ein; **Heute** (Knopf oder H) springt zum aktuellen Spieltag.
+- **Ligen:** Spielplan der Liga als Kalender mit allen Tagen, Spieltage rasten in der Mitte ein. Liga-Logos überall (Chips, Spaltenköpfe, Spielleiste).
+- **Lieblingsteams in Vereinsfarbe** (Spielzeilen, Tabelle, Kacheln, Team-Karten); Team-Karten mit **Tabellenplatz**.
+- **Kader-Radar** (Team-Blatt › Kader, Fußball): Stärken des Kaders aus den Saisonwerten aller Spieler (Torgefahr, Chancen, Kreativität, Passspiel, Zweikampf, Defensive, Abwehr hält); Spieler antippen = **Spieler-Radar** je 90 Minuten im Vergleich zum Besten im Kader (Torhüter eigene Achsen).
+- **In den Kalender** (Team-Blatt): kommende Spiele als .ics nach `Downloads\Arena`, öffnet die Kalender-App.
+- Menüleiste: im Vollbild und maximiert rücken die Reiter neben die Marke (oben in der Mitte sitzt die Notch). Symbole aus der Bibliothek (`nojo-design`).
+
 ## KI-Einordnung der Schlagzeilen (Laya, optional)
 
 Ein kleines lokales Modell ([Laya](https://github.com/NandhaKishorM/laya), Apache-2.0) ordnet die ESPN-Schlagzeilen in **Ligen** ein: *Transfer fix*, *Gerücht*, *Verlängerung*, *Verletzung*, *Spiel*. Es läuft auf dem eigenen Rechner (Web Worker, ONNX Runtime WASM, etwa 1 s je Schlagzeile, jede nur einmal), ohne Konto und ohne Daten nach außen. Etiketten erscheinen erst ab 45 % Sicherheit; der Tooltip zeigt den Wert. Ohne Modell bleibt es bei der Stichwortsuche.
@@ -50,6 +63,9 @@ Dieselben wie in der Notch, alle ohne Konto und Schlüssel (`src-tauri/src/feed.
 | ESPN `…/summary?event=` | Spielanalyse: Statistik, Kommentar (Druckphasen), Aufstellungen, Spielort, Quoten, Form, direkter Vergleich (`src-tauri/src/info.rs`) |
 | ESPN `…/teams/{id}/roster` | Kader |
 | ESPN `…/news`, `…/transactions` | Schlagzeilen, Kaderbewegungen (US-Ligen) |
+| Wikidata (`wbsearchentities`, `EntityData`) | Stadion: Kapazität, Koordinaten, Eröffnung |
+| OpenStreetMap Overpass | Stadion-Grundriss und Spielfeld von oben |
+| ESPN Core `athletes/{id}/statistics` | Saisonwerte der Spieler (Kader- und Spieler-Radar) |
 | GitHub-Release `laya-model-1` | optionales Laya-Modell (nur auf Wunsch, einmalig) |
 | OpenLigaDB `api.openligadb.de` | 3. Liga, Frauen-Bundesliga (Spiele, Tabelle, Team-Spiele), Ersatz bei ESPN-Ausfall |
 

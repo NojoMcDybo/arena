@@ -2,6 +2,7 @@
 //!
 //! - feed.rs:     Live-Spiele, Ticker und Ballverlauf (dieselben Quellen wie die Notch)
 //! - extra.rs:    Spielplan, Tabellen, Teams
+//! - more.rs:     Liga-Logos, Stadien (Wikidata + OpenStreetMap), Kaderwerte fuer die Radare
 //! - laya.rs:     optionales KI-Modell fuer Schlagzeilen (Download, Pruefung, Deinstallation)
 //! - info.rs:     Spieldetails (Statistik, Druckphasen, Aufstellung, Prognose), Kader, Schlagzeilen
 //! - settings.rs: Sport-Einstellungen, abgeglichen mit der Notch (127.0.0.1:47800)
@@ -14,6 +15,7 @@ mod extra;
 mod feed;
 mod info;
 mod laya;
+mod more;
 mod settings;
 mod update;
 
@@ -87,6 +89,25 @@ fn open_link(app: AppHandle, url: String) -> Result<(), String> {
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Spiele eines Teams als Kalenderdatei (.ics, vom Frontend gebaut) in Downloads\Arena speichern und oeffnen
+/// (Windows nimmt die Standard-Kalender-App). Gibt den Pfad zurueck.
+#[tauri::command]
+fn export_ics(app: AppHandle, name: String, ics: String) -> Result<String, String> {
+    if !ics.starts_with("BEGIN:VCALENDAR") || ics.len() > 200_000 {
+        return Err("keine Kalenderdatei".into());
+    }
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect::<String>().trim().chars().take(60).collect();
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?.join("Arena");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{} – Spiele.ics", if safe.is_empty() { "Team".into() } else { safe }));
+    // Zeilenenden nach RFC 5545 (CRLF), egal wie das Frontend sie liefert
+    let crlf = ics.replace("\r\n", "\n").replace('\n', "\r\n");
+    std::fs::write(&path, crlf).map_err(|e| e.to_string())?;
+    let p = path.to_string_lossy().into_owned();
+    let _ = app.opener().open_path(&p, None::<&str>);
+    Ok(p)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -107,6 +128,9 @@ pub fn run() {
             info::match_detail,
             info::team_roster,
             info::league_news,
+            more::league_meta,
+            more::venue_info,
+            more::squad_stats,
             laya::laya_status,
             laya::laya_install,
             laya::laya_uninstall,
@@ -117,6 +141,7 @@ pub fn run() {
             update::update_install,
             take_pending,
             open_link,
+            export_ics,
         ])
         .setup(|app| {
             let h = app.handle().clone();

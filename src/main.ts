@@ -13,9 +13,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { glassLight, ICONS, lightScroller, liquid, segments, svgIcon, windowControls } from "./nojo/nojo-ui";
+import { glassLight, icon, ICONS, lightScroller, liquid, segments, windowControls } from "./nojo/nojo-ui";
 import { bugEl, clockOf, Court, crestEl, kickoff, Pitch, scoreOf, tickerEl, type SportMatch, type SportPlay, type SportState, type SportTeam } from "./sport-ui";
 import { morph } from "./morph";
+import { CrestDots } from "./halftone";
+import { leagueColor, leagueIcon, loadLeagueMeta } from "./leagues";
+import { radarEl, scale } from "./radar";
+import type { Venue } from "./stadium";
 import { crestOf, DEFAULT_SPORT, renderSettings, type FavTeam, type LeagueInfo, type Snapshot } from "./settings-ui";
 import { card, detailCards, type MatchDetail } from "./detail-ui";
 import { classify, initLaya, installLaya, labelOf, layaStatus, layaWork, onLaya, retryLaya, uninstallLaya } from "./laya/client";
@@ -49,6 +53,14 @@ const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Dat
 const timeOf = (t: number) => new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
 const norm = (n: string) => n.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\b(1|fc|sv|vfl|vfb|tsg|sc|fsv|spvgg|bsc)\b/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 const isFavTeam = (t: SportTeam) => snap.sport.teams.some((f) => f.key === t.id || norm(f.name) === norm(t.name));
+/** Teamfarben aus allen gesehenen Spielen (Tabellen liefern keine) — Lieblingsteams leuchten in Vereinsfarbe */
+const teamColors = new Map<string, string>();
+function rememberColors(ms: SportMatch[]) {
+  for (const m of ms) for (const t of [m.home, m.away]) if (t.color) { teamColors.set(t.id, t.color); teamColors.set(norm(t.name), t.color); }
+}
+const colorOfTeam = (id: string, name: string) => teamColors.get(id) ?? teamColors.get(norm(name)) ?? "";
+/** Farbe des Lieblingsteams in einem Spiel (leer, wenn keins mitspielt) */
+const favColor = (m: SportMatch) => (isFavTeam(m.home) ? m.home.color : isFavTeam(m.away) ? m.away.color : "");
 const leagueInfo = (id: string) => leagues.find((l) => l.id === id);
 const leagueName = (id: string) => leagueInfo(id)?.name ?? id;
 const sportOf = (id: string) => leagueInfo(id)?.sport ?? "soccer";
@@ -100,8 +112,10 @@ function dayLabel(t: number) {
 const shortDay = (t: number) => dayLabel(t).replace(/^(Heute|Morgen|Gestern) · .*/, "$1");
 
 /** Chips: Ein-/Ausschalter (aria-pressed) */
-function chip(text: string, on: boolean, click: () => void, title = "") {
+function chip(text: string, on: boolean, click: () => void, title = "", lead?: HTMLElement) {
   const b = el("button", "", text);
+  b.dataset.key = text;
+  if (lead) b.prepend(lead);
   b.setAttribute("aria-pressed", String(on));
   if (title) b.title = title;
   b.onclick = click;
@@ -120,6 +134,8 @@ function setView(v: View) {
   document.querySelectorAll<HTMLElement>(".view").forEach((s) => { s.hidden = s.dataset.view !== v; });
   try { localStorage.setItem("arena-view", v); } catch { /* egal */ }
   q("main").scrollTop = 0;
+  q("main").classList.toggle("snap-days", v === "plan");
+  q(".today-btn").hidden = !(v === "plan" || v === "leagues");
   if (v === "live") { focusSig = ""; renderLive(); }
   if (v === "plan") void loadPlan();
   if (v === "leagues") renderLeagues();
@@ -146,6 +162,7 @@ function tile(m: SportMatch, on: boolean) {
   b.title = `${m.home.name} – ${m.away.name} · ${m.league_name}`;
   b.style.setProperty("--hc", m.home.color);
   b.style.setProperty("--ac", m.away.color);
+  if (m.fav) b.style.setProperty("--fav", favColor(m) || "var(--n-accent)");
   b.append(bugEl(m, scoreOf(m), "bug"), el("small", "t-clock", clockOf(m)));
   // Lichtstrich: so weit ist das Spiel (nur laufende)
   if (m.state === "in") {
@@ -165,7 +182,8 @@ function renderStrip(f: SportMatch | undefined) {
   for (const m of ms) groups.set(m.league_name, [...(groups.get(m.league_name) ?? []), m]);
   const out: HTMLElement[] = [];
   for (const [name, list] of groups) {
-    const lg = el("div", "strip-league n-eyebrow", name);
+    const lg = el("div", "strip-league n-eyebrow");
+    lg.append(leagueIcon(list[0].league, name, "lg-ico sm"), name);
     lg.dataset.key = `lg:${name}`;
     out.push(lg);
     out.push(...list.map((m) => tile(m, m.key === f?.key)));
@@ -196,7 +214,8 @@ function renderLive() {
   renderDetail(f);
 }
 
-const openIcon = svgIcon('<path d="M9 6h9v9"/><path d="M18 6 6 18"/>');
+/** Wappen beider Teams als Punkteraster im Hintergrund */
+const crestDots = new CrestDots();
 
 function focusEl(f: SportMatch) {
   const wrap = el("article", `big ${f.state}`);
@@ -204,10 +223,12 @@ function focusEl(f: SportMatch) {
   wrap.style.setProperty("--hc", f.home.color);
   wrap.style.setProperty("--ac", f.away.color);
   const head = el("div", "big-head");
-  head.append(el("span", "n-eyebrow", f.league_name), el("span", `big-clock ${f.state}`, f.state === "pre" ? `${kickoff(f)} · ${countdown(f.start)}` : clockOf(f)));
+  const lg = el("span", "n-eyebrow big-league");
+  lg.append(leagueIcon(f.league, f.league_name, "lg-ico"), f.league_name);
+  head.append(lg, el("span", `big-clock ${f.state}`, f.state === "pre" ? `${kickoff(f)} · ${countdown(f.start)}` : clockOf(f)));
   if (f.link) {
     const open = el("button", "n-ico sm n-glass n-liquid");
-    open.innerHTML = openIcon;
+    open.innerHTML = icon("open");
     open.title = "Spielseite im Browser öffnen";
     open.setAttribute("aria-label", open.title);
     open.onclick = () => void invoke("open_link", { url: f.link }).catch(() => {});
@@ -226,13 +247,15 @@ function focusEl(f: SportMatch) {
   const body = el("div", "big-body");
   const main = el("div", "col col-main");
   const aside = el("div", "col col-side");
-  if (f.pitch && f.source === "espn" && f.state !== "pre") {
+  // alle Elemente stehen immer da; ohne Daten bleiben sie leer (Spielfeld ohne Spieler, leeres Wurfbild)
+  if (f.sport === "soccer") {
     pitch.setMatch(f);
+    if (f.source !== "espn") pitch.idle("Ballverlauf gibt es nur für ESPN-Wettbewerbe");
     const pw = card("Ballverlauf", "", "pitch-card");
     pw.append(pitch.el);
     main.append(pw);
   }
-  if (f.court && f.source === "espn" && f.state !== "pre") {
+  if (f.sport === "basketball") {
     court.setMatch(f);
     const cw = card("Wurfbild", "Treffer ● · Fehlwürfe ×", "court-card");
     cw.append(court.el);
@@ -241,25 +264,44 @@ function focusEl(f: SportMatch) {
   const slot = (cls: string) => { const e = el("div", `slot ${cls}`); e.dataset.key = cls; e.dataset.keep = ""; return e; };
   main.append(slot("slot-main"));
   // Basketball hat keinen Ticker (die Wuerfe stehen im Wurfbild)
-  if (f.state !== "pre" && !(f.court && !f.events.length)) {
+  if (f.sport !== "basketball") {
     const tk = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
     tk.append(tickerEl(f, 24));
     aside.append(tk);
   }
   aside.append(slot("slot-side"));
   body.append(main, aside);
-  wrap.append(head, score, body);
+  crestDots.set(f.home, f.away);
+  wrap.append(crestDots.el, head, score, body);
   return wrap;
 }
 
 // Analyse zum gewaehlten Spiel (info.rs); laufend alle 30 s, sonst selten
 const details = new Map<string, { at: number; d?: MatchDetail; err?: string; loading?: boolean }>();
 
+// Stadion (more.rs: Wikidata + OpenStreetMap), je Name einmal
+const venues = new Map<string, { v?: Venue; loading?: boolean }>();
+function venueFor(d: MatchDetail | undefined): { v: Venue | null; loading: boolean } {
+  if (!d?.venue) return { v: null, loading: !d };
+  const k = `${d.venue}|${d.city}`;
+  let c = venues.get(k);
+  if (!c) {
+    c = { loading: true };
+    venues.set(k, c);
+    invoke<Venue>("venue_info", { name: d.venue, city: d.city })
+      .then((v) => venues.set(k, { v }))
+      .catch(() => venues.set(k, {}))
+      .finally(() => { const now = focusMatch(); if (view === "live" && now) { detailSig = ""; renderDetail(now); } });
+  }
+  return { v: c.v ?? null, loading: !!c.loading };
+}
+
 function renderDetail(f: SportMatch) {
   const main = q(".slot-main"), side = q(".slot-side");
   if (!main || !side) return;
   if (f.key.startsWith("oldb/")) {
-    if (detailSig !== "oldb") { detailSig = "oldb"; morph(main, []); morph(side, []); }
+    // OpenLigaDB: keine Analyse — die Karten stehen trotzdem da, leer
+    if (detailSig !== `oldb:${f.key}`) { detailSig = `oldb:${f.key}`; const { main: a, side: b } = detailCards(f, null, null, false); morph(main, a); morph(side, b); }
     return;
   }
   const c = details.get(f.key);
@@ -273,15 +315,11 @@ function renderDetail(f: SportMatch) {
       .finally(() => { const now = focusMatch(); if (view === "live" && now?.key === key) renderDetail(now); });
   }
   const cur = details.get(f.key);
-  const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.state === "in" ? f.clock : ""]);
+  const ven = venueFor(cur?.d);
+  const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.state === "in" ? f.clock : "", ven.loading, !!ven.v]);
   if (sig === detailSig) return;
   detailSig = sig;
-  if (!cur?.d) {
-    morph(main, cur?.err ? [] : [faint("Analyse wird geladen …", "faint slot-wait")]);
-    morph(side, []);
-    return;
-  }
-  const { main: a, side: b } = detailCards(f, cur.d);
+  const { main: a, side: b } = detailCards(f, cur?.d ?? null, ven.v, ven.loading);
   morph(main, a);
   morph(side, b);
 }
@@ -336,6 +374,7 @@ async function loadPlan(force = false, quiet = false) {
   if (!quiet) renderPlan();
   try {
     plan = await invoke<SportMatch[]>("schedule");
+    rememberColors(plan);
     planAt = Date.now();
     planErr = "";
   } catch (e) {
@@ -344,6 +383,7 @@ async function loadPlan(force = false, quiet = false) {
   planLoading = false;
   if (view === "plan") renderPlan();
   if (view === "leagues") renderLeaguePlan();
+  if (view === "teams") void renderTeams();
   if (view === "live" && !live.matches.length) renderLive();
 }
 
@@ -352,6 +392,7 @@ function prow(m: SportMatch, opts: { league?: boolean; when?: string } = {}) {
   const lv = live.matches.find((x) => x.key === m.key) ?? m;
   const r = el("button", `prow ${lv.state}` + (lv.fav ? " fav" : "") + (opts.league ? " with-league" : ""));
   r.dataset.key = lv.key;
+  if (lv.fav) r.style.setProperty("--fav", favColor(lv) || "var(--n-accent)");
   r.title = `${lv.home.name} – ${lv.away.name} · ${lv.league_name}`;
   const when = el("span", "p-when");
   if (opts.when) when.textContent = opts.when;
@@ -381,7 +422,7 @@ function renderPlan() {
   morph(q(".plan-leagues"), ids.filter((id) => !sportOff.has(sportOf(id))).map((id) => chip(leagueName(id), !planOff.has(id), () => {
     if (planOff.has(id)) planOff.delete(id); else planOff.add(id);
     renderPlan();
-  })));
+  }, "", leagueIcon(id, leagueName(id), "lg-ico sm"))));
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) => b.classList.toggle("active", b.dataset.scope === planScope));
   const box = q(".plan");
   if (!plan) {
@@ -393,7 +434,7 @@ function renderPlan() {
     morph(box, [faint(planScope === "fav" ? "Keine Spiele deiner Teams in diesen drei Wochen." : "Keine Spiele in diesem Zeitraum.")]);
     return;
   }
-  // Tag -> Wettbewerb -> Spiele; die Wettbewerbe eines Tages stehen nebeneinander
+  // Tag -> Wettbewerb -> Spiele; jeder Tag des Zeitraums steht da (auch spielfreie), die Ligen nebeneinander
   const days = new Map<string, Map<string, SportMatch[]>>();
   for (const m of list) {
     const d = new Date(m.start).toDateString();
@@ -405,25 +446,69 @@ function renderPlan() {
   const out: HTMLElement[] = [];
   let today: HTMLElement | null = null;
   const start = new Date().setHours(0, 0, 0, 0);
-  for (const day of days.values()) {
-    const first = [...day.values()][0][0];
-    const sec = el("section", "day");
-    sec.dataset.key = new Date(first.start).toDateString();
-    sec.append(el("h3", "day-head n-liquid", dayLabel(first.start)));
-    const grid = el("div", "day-grid");
-    for (const [id, ms] of [...day.entries()].sort((a, b) => order(a[0]) - order(b[0]))) {
-      const c = card(leagueName(id), `${SPORT_NAME[ms[0].sport] ?? ""} · ${ms.length} ${ms.length === 1 ? "Spiel" : "Spiele"}`, "plan-card");
-      c.append(...ms.map((m) => prow(m)));
-      grid.append(c);
+  for (const t of calendarDays(plan)) {
+    const key = new Date(t).toDateString();
+    const day = days.get(key);
+    const sec = el("section", "day" + (day ? "" : " free"));
+    sec.dataset.key = key;
+    sec.append(el("h3", "day-head n-liquid", dayLabel(t)));
+    if (!day) {
+      sec.append(el("p", "day-free", "spielfrei"));
+    } else {
+      const grid = el("div", "day-grid");
+      for (const [id, ms] of [...day.entries()].sort((a, b) => order(a[0]) - order(b[0]))) {
+        const col = el("section", "plan-col");
+        col.dataset.key = id;
+        col.style.setProperty("--lc", leagueColor(id));
+        const head = el("header", "pc-head");
+        head.append(leagueIcon(id, leagueName(id)), el("span", "pc-name", leagueName(id)), el("span", "c-meta", `${ms.length} ${ms.length === 1 ? "Spiel" : "Spiele"}`));
+        col.append(head, ...ms.map((m) => prow(m)));
+        grid.append(col);
+      }
+      sec.append(grid);
+      if (!today && t >= start) today = sec;
     }
-    sec.append(grid);
     out.push(sec);
-    if (!today && first.start >= start) today = sec;
   }
   morph(box, out);
+  flowColumns(box);
   if (!planScrolled && today) {
     planScrolled = true;
-    requestAnimationFrame(() => { q("main").scrollTop = Math.max(0, today!.offsetTop - 120); });
+    // der naechste Spieltag (heute oder spaeter) steht in der Mitte
+    requestAnimationFrame(() => today!.scrollIntoView({ block: "center" }));
+  }
+}
+
+/** Jeder Tag zwischen erstem und letztem Spiel des Zeitraums (Mitternacht, lokal) */
+function calendarDays(ms: SportMatch[]): number[] {
+  if (!ms.length) return [];
+  const d = new Date(Math.min(...ms.map((m) => m.start)));
+  d.setHours(0, 0, 0, 0);
+  const end = Math.max(...ms.map((m) => m.start));
+  const out: number[] = [];
+  while (d.getTime() <= end && out.length < 60) { out.push(d.getTime()); d.setDate(d.getDate() + 1); }
+  return out;
+}
+
+/**
+ * Farbverlauf ueber die Ligen eines Tages: jede Spalte traegt ihre Ligafarbe, an der Grenze zur Nachbarspalte
+ * (in derselben Zeile) fliesst sie in deren Farbe ueber (CSS-Verlauf in OKLCH). Bricht das Raster um, beginnt
+ * jede Zeile in ihrer eigenen Farbe und bekommt runde Enden.
+ */
+function flowColumns(root: HTMLElement) {
+  for (const grid of root.querySelectorAll<HTMLElement>(".day-grid")) {
+    const cols = Array.from(grid.children) as HTMLElement[];
+    const rows = new Map<number, HTMLElement[]>();
+    for (const c of cols) rows.set(c.offsetTop, [...(rows.get(c.offsetTop) ?? []), c]);
+    for (const row of rows.values()) {
+      row.forEach((c, i) => {
+        const own = c.style.getPropertyValue("--lc");
+        c.style.setProperty("--l", i > 0 ? row[i - 1].style.getPropertyValue("--lc") : own);
+        c.style.setProperty("--r", i < row.length - 1 ? row[i + 1].style.getPropertyValue("--lc") : own);
+        c.classList.toggle("row-first", i === 0);
+        c.classList.toggle("row-last", i === row.length - 1);
+      });
+    }
   }
 }
 
@@ -464,7 +549,7 @@ function renderLeagues() {
   }));
   const mine = ids.filter((id) => sportOf(id) === leagueSport);
   if (!mine.includes(leagueId)) leagueId = mine.find((id) => !NO_TABLE.has(id)) ?? mine[0] ?? "";
-  morph(q(".league-chips"), mine.map((id) => chip(leagueName(id), id === leagueId, () => { leagueId = id; renderLeagues(); })));
+  morph(q(".league-chips"), mine.map((id) => chip(leagueName(id), id === leagueId, () => { leagueId = id; renderLeagues(); }, "", leagueIcon(id, leagueName(id), "lg-ico sm"))));
   const grid = q(".league-grid");
   if (!leagueId) {
     grid.hidden = true;
@@ -511,6 +596,7 @@ function renderTable() {
     for (const r of g.rows) {
       const row = el("button", "trow" + (us ? " us" : "") + (r.fav || isFavTeam(r.team) ? " fav" : ""));
       row.dataset.key = r.team.id || r.team.name;
+      if (r.fav || isFavTeam(r.team)) row.style.setProperty("--fav", colorOfTeam(r.team.id, r.team.name) || "var(--n-accent)");
       row.title = r.note ? `${r.team.name} · ${r.note}` : r.team.name;
       if (r.color) { row.style.setProperty("--z", r.color); row.classList.add("zone"); notes.set(r.note, r.color); }
       const team = el("span", "t-team");
@@ -548,21 +634,22 @@ function renderLeaguePlan() {
     if (!planLoading) void loadPlan(false, true);
   } else {
     const ms = plan.filter((m) => m.league === leagueId);
+    c.style.setProperty("--lc", leagueColor(leagueId));
     c.querySelector(".c-head")!.append(el("span", "c-meta", `${ms.length} Spiele · 4 Wochen`));
     if (!ms.length) list.append(faint("Keine Spiele in diesem Zeitraum.", "faint c-empty"));
-    let day = "";
+    // jeder Tag des Zeitraums: Spieltage mit ihren Spielen (rasten beim Scrollen in der Mitte ein), freie Tage schmal
     let today: HTMLElement | null = null;
     const start = new Date().setHours(0, 0, 0, 0);
-    for (const m of ms) {
-      const d = new Date(m.start).toDateString();
-      if (d !== day) {
-        day = d;
-        const h = el("div", "lg-day", dayLabel(m.start));
-        h.dataset.key = d;
-        list.append(h);
-        if (!today && m.start >= start) today = h;
-      }
-      list.append(prow(m));
+    for (const t of ms.length ? calendarDays(plan) : []) {
+      const key = new Date(t).toDateString();
+      const games = ms.filter((m) => new Date(m.start).toDateString() === key);
+      const block = el("div", "lg-block" + (games.length ? "" : " free"));
+      block.dataset.key = key;
+      block.append(el("div", "lg-day", dayLabel(t)));
+      if (games.length) block.append(...games.map((m) => prow(m)));
+      else block.append(el("span", "lg-free", "spielfrei"));
+      list.append(block);
+      if (!today && games.length && t >= start) today = block;
     }
     // gleicher Wettbewerb: Position behalten (Live-Updates zeichnen neu), neuer: zu „Heute“ springen
     const prev = box.querySelector<HTMLElement>(".lg-scroll");
@@ -570,7 +657,7 @@ function renderLeaguePlan() {
     lgPlanFor = leagueId;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (keep >= 0) list.scrollTop = keep;
-      else if (today) list.scrollTop = Math.max(0, today.getBoundingClientRect().top - list.getBoundingClientRect().top - 4);
+      else if (today) list.scrollTop = Math.max(0, list.scrollTop + today.getBoundingClientRect().top - list.getBoundingClientRect().top - (list.clientHeight - today.offsetHeight) / 2);
     }));
   }
   c.append(list);
@@ -720,8 +807,14 @@ async function renderTeams() {
   const cards: HTMLElement[] = teams.map((t) => {
     const c = el("article", "team n-card");
     c.dataset.key = t.key;
+    const tc = colorOfTeam(t.key, t.name);
+    if (tc) c.style.setProperty("--fav", tc);
     const head = el("div", "team-head");
-    head.append(crestOf(t, "crest team-crest"), el("h3", "", t.name));
+    const title = el("div", "team-title");
+    title.append(el("h3", "", t.name));
+    const pos = tablePlace(t);
+    if (pos) title.append(el("span", "team-place", pos));
+    head.append(crestOf(t, "crest team-crest"), title);
     c.append(head);
     const v = teamViews.get(t.key);
     if (v?.v) {
@@ -883,6 +976,89 @@ type RosterPlayer = { jersey: string; name: string; pos: string; pos_name: strin
 const rosters = new Map<string, { v?: RosterPlayer[]; err?: string; loading?: boolean }>();
 const POS_DE: Record<string, string> = { G: "Tor", D: "Abwehr", M: "Mittelfeld", F: "Sturm" };
 
+type PlayerStats = {
+  id: string; name: string; jersey: string; pos: string; apps: number; minutes: number; goals: number; assists: number;
+  shots: number; shots_on: number; shot_assists: number; passes_ok: number; passes_bad: number; duels_won: number; duels: number;
+  tackles: number; interceptions: number; recoveries: number; saves: number; conceded: number; clean_sheets: number;
+};
+const squadStats = new Map<string, { v?: PlayerStats[]; err?: string; loading?: boolean }>();
+let openPlayer = "";
+const de1 = (v: number) => v.toLocaleString("de-DE", { maximumFractionDigits: 1 });
+const pctTxt = (v: number) => `${Math.round(v * 100)} %`;
+
+type SquadState = { v?: PlayerStats[]; err?: string; loading?: boolean };
+function loadSquadStats(key: string): SquadState {
+  const c = squadStats.get(key);
+  if (c) return c;
+  const n: SquadState = { loading: true };
+  squadStats.set(key, n);
+  invoke<PlayerStats[]>("squad_stats", { key })
+    .then((v) => squadStats.set(key, { v }))
+    .catch((e) => squadStats.set(key, { err: String(e) }))
+    .finally(() => { if (sheetTeam?.key === key && sheetTab === "squad") renderSheetTeam(); });
+  return n;
+}
+
+/**
+ * Staerken des Kaders: Saisonwerte aller Spieler, je Spiel gerechnet (Spielminuten / 990 = Spiele). Bezugsgroessen
+ * sind Spitzen- bzw. Schwachwerte einer Bundesliga-Saison — ein voller Strahl heisst „sehr stark“, nicht „Maximum“.
+ */
+function squadRadar(t: FavTeam, v: PlayerStats[]) {
+  const sum = (k: keyof PlayerStats) => v.reduce((a, p) => a + (Number(p[k]) || 0), 0);
+  const games = Math.max(1, sum("minutes") / 990);
+  const keepers = v.filter((p) => p.pos === "G");
+  const conceded = keepers.reduce((a, p) => a + p.conceded, 0);
+  const keeperGames = Math.max(1, keepers.reduce((a, p) => a + p.minutes, 0) / 90);
+  const passes = sum("passes_ok") / Math.max(1, sum("passes_ok") + sum("passes_bad"));
+  const duels = sum("duels_won") / Math.max(1, sum("duels"));
+  const axes = ["Torgefahr", "Chancen", "Kreativität", "Passspiel", "Zweikampf", "Defensive", "Abwehr hält"];
+  const vals = [
+    scale(sum("goals") / games, 0.5, 2.8), scale(sum("shots") / games, 7, 20), scale(sum("shot_assists") / games, 4, 14),
+    scale(passes, 0.72, 0.9), scale(duels, 0.42, 0.58), scale((sum("tackles") + sum("interceptions")) / games, 10, 32),
+    keepers.length ? scale(conceded / keeperGames, 2.6, 0.6) : null,
+  ];
+  const raw = [`${de1(sum("goals") / games)} Tore / Spiel`, `${de1(sum("shots") / games)} Schüsse / Spiel`, `${de1(sum("shot_assists") / games)} Torschussvorlagen / Spiel`,
+    pctTxt(passes), pctTxt(duels), `${de1((sum("tackles") + sum("interceptions")) / games)} Ballgewinne / Spiel`, keepers.length ? `${de1(conceded / keeperGames)} Gegentore / Spiel` : "–"];
+  const c = card("Stärken des Kaders", `Saison · ${Math.round(games)} Spiele`, "squad-radar");
+  const tc = colorOfTeam(t.key, t.name) || "#75b8ff";
+  const any = sum("minutes") > 0;
+  c.append(radarEl(axes, [{ label: t.name, color: tc, values: any ? vals : axes.map(() => null), raw }]));
+  c.append(el("p", "c-foot", any ? "Bezug: Spitzen- und Schwachwerte einer Bundesliga-Saison" : "Noch keine Saisonwerte"));
+  return c;
+}
+
+/** Radar eines Spielers: je 90 Minuten, im Vergleich zum Besten des Kaders (ab 180 Minuten) */
+function playerRadar(p: PlayerStats, all: PlayerStats[], color: string) {
+  const per90 = (x: PlayerStats, k: keyof PlayerStats) => (x.minutes > 0 ? (Number(x[k]) || 0) / (x.minutes / 90) : 0);
+  const pool = all.filter((x) => x.minutes >= 180 && x.pos !== "G");
+  const best = (f: (x: PlayerStats) => number) => Math.max(0.0001, ...pool.map(f));
+  const rel = (f: (x: PlayerStats) => number) => (p.minutes > 0 ? Math.min(1, f(p) / best(f)) : null);
+  const passQ = (x: PlayerStats) => x.passes_ok / Math.max(1, x.passes_ok + x.passes_bad);
+  const duelQ = (x: PlayerStats) => x.duels_won / Math.max(1, x.duels);
+  let axes: string[], values: (number | null)[], raw: string[];
+  if (p.pos === "G") {
+    const g = Math.max(1, p.minutes / 90);
+    axes = ["Paraden", "Weiße Weste", "Gegentore", "Passquote"];
+    values = p.minutes > 0 ? [scale(p.saves / g, 1, 5), scale(p.clean_sheets / Math.max(1, p.apps), 0, 0.5), scale(p.conceded / g, 2.6, 0.6), scale(passQ(p), 0.55, 0.9)] : axes.map(() => null);
+    raw = [`${de1(p.saves / g)} / Spiel`, `${p.clean_sheets} von ${p.apps}`, `${de1(p.conceded / g)} / Spiel`, pctTxt(passQ(p))];
+  } else {
+    axes = ["Tore", "Vorlagen", "Schüsse", "Torschussvorlagen", "Passquote", "Zweikampfquote", "Ballgewinne"];
+    const def = (x: PlayerStats) => per90(x, "tackles") + per90(x, "interceptions") + per90(x, "recoveries");
+    values = [rel((x) => per90(x, "goals")), rel((x) => per90(x, "assists")), rel((x) => per90(x, "shots")), rel((x) => per90(x, "shot_assists")),
+      p.minutes > 0 ? scale(passQ(p), 0.6, 0.92) : null, p.minutes > 0 && p.duels ? scale(duelQ(p), 0.3, 0.7) : null, rel(def)];
+    raw = [`${de1(per90(p, "goals"))} / 90`, `${de1(per90(p, "assists"))} / 90`, `${de1(per90(p, "shots"))} / 90`, `${de1(per90(p, "shot_assists"))} / 90`,
+      pctTxt(passQ(p)), p.duels ? pctTxt(duelQ(p)) : "–", `${de1(def(p))} / 90`];
+  }
+  const box = el("div", "player-detail");
+  box.dataset.key = `detail:${p.name}`;
+  box.append(radarEl(axes, [{ label: p.name, color, values, raw }], "player-radar"));
+  const facts = el("div", "pd-facts");
+  const fact = (k: string, v: string) => { const f = el("span", ""); f.append(el("b", "", v), el("small", "", k)); return f; };
+  facts.append(fact("Einsätze", String(p.apps)), fact("Minuten", p.minutes.toLocaleString("de-DE")), fact("Tore", String(p.goals)), fact("Vorlagen", String(p.assists)));
+  box.append(facts, el("p", "c-foot", p.minutes > 0 ? (p.pos === "G" ? "Bezug: gute und schwache Werte einer Saison" : "Strahlen: im Vergleich zum Besten im Kader (ab 180 Min.); Quoten absolut") : "Noch keine Einsatzminuten"));
+  return box;
+}
+
 function squadEl(t: FavTeam): HTMLElement[] {
   const c = rosters.get(t.key);
   if (!c) {
@@ -902,11 +1078,20 @@ function squadEl(t: FavTeam): HTMLElement[] {
   }
   const order = ["Tor", "Abwehr", "Mittelfeld", "Sturm"];
   const out: HTMLElement[] = [];
+  // Fussball: Radar der Kaderstaerken oben, je Spieler beim Antippen
+  const stats = t.key.startsWith("soccer:") ? loadSquadStats(t.key) : null;
+  if (stats?.v) out.push(squadRadar(t, stats.v));
+  else if (stats?.loading) out.push(faint("Saisonwerte werden geladen …", "faint"));
   for (const [g, ps] of [...groups.entries()].sort((a, b) => (order.indexOf(a[0]) + 1 || 9) - (order.indexOf(b[0]) + 1 || 9))) {
     out.push(el("div", "n-eyebrow", `${g} · ${ps.length}`));
     for (const p of ps.sort((a, b) => (Number(a.jersey) || 99) - (Number(b.jersey) || 99))) {
-      const r = el("div", "player" + (p.injury ? " hurt" : ""));
+      const ps = stats?.v?.find((x) => x.name === p.name);
+      const r = el("div", "player" + (p.injury ? " hurt" : "") + (ps ? " has-radar" : "") + (openPlayer === p.name ? " open" : ""));
       r.dataset.key = `${p.jersey}:${p.name}`;
+      if (ps) {
+        r.title = "Antippen: Radar des Spielers";
+        r.onclick = () => { openPlayer = openPlayer === p.name ? "" : p.name; renderSheetTeam(); };
+      }
       r.append(el("span", "pl-no", p.jersey || "–"), el("span", "pl-name", p.name));
       const meta = el("span", "pl-meta");
       if (p.flag) {
@@ -921,6 +1106,7 @@ function squadEl(t: FavTeam): HTMLElement[] {
       r.append(meta);
       if (p.injury) { const i = el("span", "pl-hurt", "verletzt"); i.title = p.injury; r.append(i); }
       out.push(r);
+      if (ps && openPlayer === p.name) out.push(playerRadar(ps, stats!.v!, colorOfTeam(t.key, t.name) || "#75b8ff"));
     }
   }
   out.push(faint("Kader: ESPN. Marktwerte und Transferhistorie gibt es nicht frei abrufbar.", "faint fine"));
@@ -934,7 +1120,8 @@ function renderSheetTeam() {
   const mine = snap.sport.teams.some((x) => x.key === t.key);
   const bar = el("div", "sheet-bar");
   const fav = el("button", "n-btn" + (mine ? "" : " primary"), mine ? "Aus meinen Teams" : "Zu meinen Teams");
-  fav.addEventListener("click", () => {
+  fav.dataset.key = "fav";
+  fav.onclick = () => {
     const teams = mine ? snap.sport.teams.filter((x) => x.key !== t.key) : [...snap.sport.teams, { key: t.key, name: t.name, ...(t.logo ? { logo: t.logo } : {}) }];
     const sport = { ...snap.sport, teams };
     snap = { ...snap, sport };
@@ -942,9 +1129,15 @@ function renderSheetTeam() {
     announce(mine ? `${t.name} entfernt` : `${t.name} hinzugefügt`);
     renderSheetTeam();
     onSettings(false);
-  });
+  };
   const parts: HTMLElement[] = [bar];
   bar.append(fav);
+  // naechste Spiele als Kalenderdatei
+  const cal = el("button", "n-btn ghost", "In den Kalender");
+  cal.dataset.key = "cal";
+  cal.title = "Kommende Spiele als .ics speichern und im Kalender öffnen";
+  cal.onclick = () => void exportCalendar(t);
+  bar.append(cal);
   // Kader nur fuer ESPN-Teams
   if (!t.key.startsWith("oldb:")) {
     const seg = el("div", "n-seg sheet-tabs");
@@ -1008,12 +1201,166 @@ function onSettings(rerenderSheet = true) {
 }
 let lastLeagues = "";
 
+// ---------- Bedienung: Spiel wechseln, Heute, Tabellenplatz, Kalender ----------
+
+/** Live: naechstes/voriges Spiel der Leiste */
+function stepMatch(dir: 1 | -1) {
+  const ms = live.matches;
+  if (ms.length < 2) return;
+  const cur = focusMatch();
+  const i = Math.max(0, ms.findIndex((m) => m.key === cur?.key));
+  focusKey = ms[(i + dir + ms.length) % ms.length].key;
+  renderLive();
+  q(`.tile[data-key="${CSS.escape(focusKey)}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/** Spielplan/Ligen: der naechste Spieltag (heute oder spaeter) in die Mitte */
+function goToday() {
+  const start = new Date().setHours(0, 0, 0, 0);
+  if (view === "plan") {
+    const day = [...document.querySelectorAll<HTMLElement>(".plan .day:not(.free)")].find((d) => new Date(d.dataset.key ?? "").getTime() >= start);
+    day?.scrollIntoView({ block: "center", behavior: "smooth" });
+  } else if (view === "leagues") {
+    const list = q(".lg-scroll");
+    const b = [...document.querySelectorAll<HTMLElement>(".lg-block:not(.free)")].find((d) => new Date(d.dataset.key ?? "").getTime() >= start);
+    if (list && b) list.scrollTo({ top: list.scrollTop + b.getBoundingClientRect().top - list.getBoundingClientRect().top - (list.clientHeight - b.offsetHeight) / 2, behavior: "smooth" });
+  }
+}
+
+/** Tabellenplatz eines Teams („Platz 3 · 15 Pkt“), sobald die Tabelle seiner Liga geladen ist */
+function tablePlace(t: FavTeam): string {
+  const m = [...live.matches, ...(plan ?? [])].find((x) => x.home.id === t.key || x.away.id === t.key || norm(x.home.name) === norm(t.name) || norm(x.away.name) === norm(t.name));
+  if (!m || NO_TABLE.has(m.league)) return "";
+  const c = tables.get(m.league);
+  if (!c) {
+    tables.set(m.league, { at: Date.now() });
+    invoke<Group[]>("standings", { league: m.league })
+      .then((g) => tables.set(m.league, { at: Date.now(), groups: g }))
+      .catch((e) => tables.set(m.league, { at: Date.now(), err: String(e) }))
+      .finally(() => { if (view === "teams") void renderTeams(); });
+    return "";
+  }
+  for (const g of c.groups ?? []) {
+    const r = g.rows.find((x) => x.team.id === t.key || norm(x.team.name) === norm(t.name));
+    if (r) return `Platz ${r.rank}${r.points ? ` · ${r.points} Pkt` : ""}`;
+  }
+  return "";
+}
+
+/** Kommende Spiele eines Teams (Spielplan + Teamansicht) als iCalendar-Datei */
+async function exportCalendar(t: FavTeam) {
+  await loadTeam(t.key);
+  const mine = (m: SportMatch) => m.home.id === t.key || m.away.id === t.key || norm(m.home.name) === norm(t.name) || norm(m.away.name) === norm(t.name);
+  const all = new Map<string, SportMatch>();
+  for (const m of [...(plan ?? []).filter(mine), ...(teamViews.get(t.key)?.v?.next ?? [])]) if (m.state === "pre" && m.start > Date.now()) all.set(m.key, m);
+  const games = [...all.values()].sort((a, b) => a.start - b.start);
+  if (!games.length) { announce("Keine kommenden Spiele"); return; }
+  const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const esc = (x: string) => x.replace(/[\\;,]/g, (c) => `\\${c}`);
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Nojo//Arena//DE", "CALSCALE:GREGORIAN", `X-WR-CALNAME:${esc(t.name)}`];
+  for (const m of games) {
+    lines.push("BEGIN:VEVENT", `UID:${m.key.replace(/[^a-z0-9.:-]/gi, "-")}@arena.nojo`, `DTSTAMP:${stamp(Date.now())}`, `DTSTART:${stamp(m.start)}`,
+      `DTEND:${stamp(m.start + (m.sport === "soccer" ? 115 : 150) * 60_000)}`, `SUMMARY:${esc(`${m.home.name} – ${m.away.name}`)}`,
+      `DESCRIPTION:${esc(m.league_name)}`, ...(m.link ? [`URL:${m.link}`] : []), "END:VEVENT");
+  }
+  lines.push("END:VCALENDAR");
+  try {
+    const path = await invoke<string>("export_ics", { name: t.name, ics: lines.join("\n") });
+    announce(`${games.length} Spiele gespeichert: ${path}`);
+  } catch (e) { announce(`Kalender: ${e}`); }
+}
+
+// ---------- Schnellsuche (Strg+K) ----------
+
+type Hit = { key: string; label: string; sub: string; lead?: HTMLElement; run: () => void; words: string };
+let palHits: Hit[] = [];
+let palSel = 0;
+
+/** Alles, was man oeffnen kann: Ansichten, Aktionen, Ligen, Teams (aus Spielen, Tabellen, Favoriten), Spiele heute */
+function paletteItems(): Hit[] {
+  const out: Hit[] = [];
+  const names: Record<View, string> = { live: "Live", plan: "Spielplan", leagues: "Ligen", teams: "Teams" };
+  VIEWS.forEach((v, i) => out.push({ key: `v:${v}`, label: names[v], sub: `Ansicht · Strg+${i + 1}`, run: () => setView(v), words: names[v] }));
+  out.push({ key: "a:full", label: isFull ? "Vollbild verlassen" : "Vollbild", sub: "F11", run: () => void setFull(!isFull), words: "vollbild fullscreen" });
+  out.push({ key: "a:settings", label: "Einstellungen", sub: "Teams, Wettbewerbe, Notch, KI", run: openSettings, words: "einstellungen settings" });
+  for (const id of chosen()) {
+    const name = leagueName(id);
+    out.push({ key: `l:${id}`, label: name, sub: `Liga · ${SPORT_NAME[sportOf(id)] ?? ""}`, lead: leagueIcon(id, name, "lg-ico"), words: name,
+      run: () => { leagueSport = sportOf(id); leagueId = id; setView("leagues"); } });
+  }
+  for (const m of live.matches.filter((x) => x.state === "in")) {
+    out.push({ key: `m:${m.key}`, label: `${m.home.short || m.home.name} – ${m.away.short || m.away.name}`, sub: `Live · ${scoreOf(m)} · ${clockOf(m)}`,
+      lead: crestEl(m.home), words: `${m.home.name} ${m.away.name} live`, run: () => { focusKey = m.key; setView("live"); } });
+  }
+  const teams = new Map<string, { key: string; name: string; logo: string; league: string }>();
+  const add = (id: string, name: string, logo: string, league: string) => { if (id && !teams.has(id)) teams.set(id, { key: id, name, logo, league }); };
+  for (const t of snap.sport.teams) add(t.key, t.name, t.logo ?? "", "Mein Team");
+  for (const m of [...live.matches, ...(plan ?? [])]) { add(m.home.id, m.home.name, m.home.logo, m.league_name); add(m.away.id, m.away.name, m.away.logo, m.league_name); }
+  for (const [lg, c] of tables) for (const g of c.groups ?? []) for (const r of g.rows) add(r.team.id, r.team.name, r.team.logo, leagueName(lg));
+  for (const t of teams.values()) {
+    out.push({ key: `t:${t.key}`, label: t.name, sub: `Team · ${t.league}`, lead: crestOf({ name: t.name, logo: t.logo }, "crest"), words: t.name,
+      run: () => void openTeam({ key: t.key, name: t.name, logo: t.logo }) });
+  }
+  return out;
+}
+
+function openPalette() {
+  const w = q(".palette-wrap");
+  w.hidden = false;
+  const input = q<HTMLInputElement>(".pal-input");
+  input.value = "";
+  renderPalette();
+  input.focus();
+  requestAnimationFrame(() => w.classList.add("show"));
+}
+
+function closePalette() {
+  const w = q(".palette-wrap");
+  w.classList.remove("show");
+  w.hidden = true;
+}
+
+function renderPalette() {
+  const query = norm(q<HTMLInputElement>(".pal-input").value);
+  const all = paletteItems();
+  // Treffer: alle Woerter der Suche im Namen; Ansichten/Aktionen nur ohne oder mit passender Suche
+  palHits = (query ? all.filter((h) => query.split(" ").every((w) => norm(h.words + " " + h.sub).includes(w))) : all.filter((h) => !h.key.startsWith("t:"))).slice(0, 12);
+  palSel = Math.min(palSel, Math.max(0, palHits.length - 1));
+  const list = q(".pal-list");
+  morph(list, palHits.length ? palHits.map((h, i) => {
+    const li = el("li", "pal-item" + (i === palSel ? " sel" : ""));
+    li.dataset.key = h.key;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", String(i === palSel));
+    if (h.lead) li.append(h.lead);
+    const txt = el("span", "pal-text");
+    txt.append(el("b", "", h.label), el("small", "", h.sub));
+    li.append(txt);
+    li.onmousemove = () => { if (palSel !== i) { palSel = i; renderPalette(); } };
+    li.onclick = () => { closePalette(); h.run(); };
+    return li;
+  }) : [el("li", "pal-empty", "Nichts gefunden")]);
+}
+
+function setupPalette() {
+  const w = q(".palette-wrap");
+  const input = q<HTMLInputElement>(".pal-input");
+  input.addEventListener("input", () => { palSel = 0; renderPalette(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { palSel = Math.min(palHits.length - 1, palSel + 1); renderPalette(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { palSel = Math.max(0, palSel - 1); renderPalette(); e.preventDefault(); }
+    else if (e.key === "Enter") { const h = palHits[palSel]; if (h) { closePalette(); h.run(); } }
+    else if (e.key === "Escape") { closePalette(); e.stopPropagation(); }
+  });
+  w.addEventListener("mousedown", (e) => { if (e.target === w) closePalette(); });
+}
+
 // ---------- Fenster: Vollbild und maximiert ----------
 
 /** Fenster erst beim Start holen (vorher gibt es die Tauri-Bruecke evtl. noch nicht) */
 let win: ReturnType<typeof getCurrentWindow>;
-const FULL_ON = svgIcon('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>');
-const FULL_OFF = svgIcon('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>');
+const FULL_ON = icon("fullscreen");
+const FULL_OFF = icon("fullscreen-exit");
 let isFull = false;
 
 async function syncWindow() {
@@ -1054,10 +1401,21 @@ async function main() {
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) =>
     b.addEventListener("click", () => { planScope = b.dataset.scope === "fav" ? "fav" : "all"; renderPlan(); }));
   q(".gear").addEventListener("click", openSettings);
+  q(".find-btn").innerHTML = icon("search");
+  q(".find-btn").addEventListener("click", openPalette);
+  q(".today-btn").addEventListener("click", goToday);
+  setupPalette();
   q(".full-btn").addEventListener("click", () => void setFull(!isFull));
   q(".sheet-x").addEventListener("click", closeSheet);
   q(".backdrop").addEventListener("mousedown", (e) => { if (e.target === e.currentTarget) closeSheet(); });
   document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); return; }
+    if (!q(".palette-wrap").hidden) return; // die Suche hat eigene Tasten
+    const typing = (e.target as HTMLElement | null)?.closest?.("input, textarea, select");
+    if (!typing && !sheetKind && !e.ctrlKey && !e.altKey) {
+      if (view === "live" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { stepMatch(e.key === "ArrowRight" ? 1 : -1); e.preventDefault(); return; }
+      if ((view === "plan" || view === "leagues") && e.key.toLowerCase() === "h") { goToday(); return; }
+    }
     if (e.key === "Escape") { if (sheetKind) closeSheet(); else if (isFull) void setFull(false); }
     if (e.key === "F11") { e.preventDefault(); void setFull(!isFull); }
     if (e.ctrlKey && /^[1-4]$/.test(e.key)) setView(VIEWS[Number(e.key) - 1]);
@@ -1066,6 +1424,8 @@ async function main() {
   snap = (await invoke<Snapshot | null>("settings_get").catch(() => null)) ?? snap;
   lastLeagues = snap.sport.leagues.join(",");
   leagues = (await invoke<LeagueInfo[] | null>("sport_leagues").catch(() => null)) ?? [];
+  // Liga-Symbole und -Farben (aus den Logos) — zeichnet neu, sobald sie da sind
+  void loadLeagueMeta(() => { if (view === "plan") renderPlan(); if (view === "leagues") renderLeagues(); if (view === "live") { focusSig = ""; renderLive(); } });
   await listen<Snapshot>("settings", (e) => { snap = e.payload; onSettings(); });
   await listen<Upd>("update", (e) => { upd = e.payload; renderUpd(); });
   onLaya(renderLaya);
@@ -1074,9 +1434,11 @@ async function main() {
   renderUpd();
   await listen<SportState>("sport", (e) => {
     live = e.payload;
+    rememberColors(live.matches);
     if (view === "live") renderLive();
     if (view === "plan" && plan) renderPlan();
     if (view === "leagues" && plan) renderLeaguePlan();
+    if (view === "teams") void renderTeams(); // naechstes Spiel, Tabellenplatz (morph: nur Geaendertes)
   });
   await listen<{ key: string; reset: boolean; plays: SportPlay[] }>("sport-plays", (e) => {
     if (e.payload.key === court.matchKey && court.el.isConnected) {
