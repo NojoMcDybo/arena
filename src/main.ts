@@ -84,6 +84,9 @@ function progress(m: SportMatch) {
 }
 
 /** „in 2 Tagen“, „in 3 Std 20 Min“, „in 12 Min“ */
+/** Anstoss vorbei, ESPN meldet aber noch nichts (manche Testspiele ueberträgt ESPN gar nicht live) */
+const noLive = (m: SportMatch) => m.state === "pre" && m.source === "espn" && Date.now() - m.start > 15 * 60_000;
+
 function countdown(t: number) {
   const d = t - Date.now();
   if (d <= 0) return "jetzt";
@@ -219,7 +222,7 @@ function renderLive() {
     renderEmpty(box);
     return;
   }
-  const sig = JSON.stringify([f.key, f.home.score, f.away.score, f.clock, f.state, f.events.map((e) => e.id)]);
+  const sig = JSON.stringify([f.key, f.home.score, f.away.score, f.clock, f.state, noLive(f), f.events.map((e) => e.id)]);
   if (sig !== focusSig) {
     focusSig = sig;
     // anderes Spiel: frische Analyse-Plaetze; gleiches Spiel: nur Geaendertes (Stand, Minute, neue Tickerzeilen)
@@ -240,7 +243,7 @@ function focusEl(f: SportMatch) {
   const head = el("div", "big-head");
   const lg = el("span", "n-eyebrow big-league");
   lg.append(leagueIcon(f.league, f.league_name, "lg-ico"), f.league_name);
-  head.append(lg, el("span", `big-clock ${f.state}`, f.state === "pre" ? `${kickoff(f)} · ${countdown(f.start)}` : clockOf(f)));
+  head.append(lg, el("span", `big-clock ${f.state}`, f.state === "pre" ? `${kickoff(f)} · ${noLive(f) ? "keine Live-Daten" : countdown(f.start)}` : clockOf(f)));
   if (f.link) {
     const open = el("button", "n-ico sm n-glass n-liquid");
     open.innerHTML = icon("open");
@@ -266,6 +269,7 @@ function focusEl(f: SportMatch) {
   if (f.sport === "soccer") {
     pitch.setMatch(f);
     if (f.source !== "espn") pitch.idle("Ballverlauf gibt es nur für ESPN-Wettbewerbe");
+    else if (noLive(f)) pitch.idle("ESPN überträgt dieses Spiel nicht live");
     const pw = card("Ballverlauf", "", "pitch-card");
     pw.append(pitch.el);
     main.append(pw);
