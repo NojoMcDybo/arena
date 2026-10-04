@@ -82,6 +82,117 @@ pub struct Venue {
     pitch: Vec<[f32; 2]>,
     /// Wikidata-Eintrag, aus dem die Zahlen stammen
     wikidata: String,
+    /// Foto (Wikimedia Commons, Vorschau 640 px) und seine Seite (Urheber, Lizenz)
+    photo: String,
+    photo_page: String,
+    architect: String,
+    /// Baukosten in Euro (Wikidata P2130, nur wenn in Euro angegeben)
+    cost_eur: u64,
+    /// Einleitung der deutschen Wikipedia (gekuerzt) und die Seite dazu
+    about: String,
+    wiki_url: String,
+    /// Besonderheiten, aus der Wikipedia-Einleitung gelesen (Seitenansicht zeichnet sie)
+    features: Features,
+}
+
+#[derive(Serialize, Default, Clone)]
+pub struct Features {
+    /// Leichtathletik-Laufbahn zwischen Feld und Tribuenen
+    track: bool,
+    /// Dach laesst sich schliessen
+    retractable: bool,
+    /// Rasen faehrt hinaus
+    slide_pitch: bool,
+    /// Stehplaetze (Zahl, wenn genannt; 1 = es gibt welche)
+    standing: u64,
+    /// Fassade leuchtet (z. B. in Vereinsfarben)
+    lit_facade: bool,
+    /// Superlativ aus dem Text, z. B. „das größte Fußballstadion Deutschlands“
+    record: String,
+}
+
+/// Besonderheiten aus der Wikipedia-Einleitung (deutsch): nur, was dort ausdruecklich steht
+fn features_of(t: &str) -> Features {
+    let l = t.to_lowercase();
+    let has = |w: &[&str]| w.iter().any(|x| l.contains(x));
+    let mut f = Features {
+        track: has(&["leichtathletik", "laufbahn", "tartanbahn"]) && !has(&["ohne laufbahn", "ohne leichtathletik", "reines fußballstadion", "reinen fußballstadion"]),
+        retractable: has(&["schiebedach", "verschließbares dach", "verschließbaren dach", "schließbares dach", "schließbaren dach", "dach geschlossen", "dach kann geschlossen"]),
+        slide_pitch: has(&["herausfahrbar", "ausfahrbar", "rasen herausgefahren", "spielfeld herausgefahren"]),
+        lit_facade: (has(&["fassade", "außenhülle", "hülle"]) && has(&["leucht", "beleucht", "farbig"])),
+        ..Default::default()
+    };
+    // „… 24.454 Stehplätze …“, „davon 25.000 Stehplätze“
+    let words: Vec<&str> = t.split_whitespace().collect();
+    for (i, w) in words.iter().enumerate() {
+        if w.to_lowercase().starts_with("steh") && i > 0 {
+            let n: String = words[i - 1].chars().filter(|c| c.is_ascii_digit()).collect();
+            if let Ok(x) = n.parse::<u64>() {
+                if (500..200_000).contains(&x) {
+                    f.standing = x;
+                    break;
+                }
+            }
+        }
+    }
+    if f.standing == 0 && has(&["stehpl", "stehtrib", "stehrang"]) {
+        f.standing = 1;
+    }
+    // Superlativ: der Satzteil ab „größte/größten/älteste/erste …“ bis zum naechsten Komma oder Punkt
+    for key in ["größte", "größten", "älteste", "ältesten", "modernste", "höchste", "erste "] {
+        if let Some(i) = l.find(key) {
+            let start = t[..i].rfind(|c: char| c == ',' || c == '.').map(|j| j + 1).unwrap_or(0);
+            let end = t[i..].find(|c: char| c == ',' || c == '.' || c == ';').map(|j| i + j).unwrap_or(t.len());
+            let part = t[start..end].trim();
+            // „Mit 81.365 Zuschauerplätzen ist es das größte …“ -> ab „das/die/der“
+            let part = ["das ", "die ", "der "].iter().filter_map(|a| part.find(a).map(|j| &part[j..])).min_by_key(|x| std::cmp::Reverse(x.len())).unwrap_or(part);
+            if part.len() > 12 && part.len() < 140 {
+                f.record = part.to_string();
+                break;
+            }
+        }
+    }
+    f
+}
+
+/// Bezeichnungen zu Wikidata-Eintraegen (deutsch, sonst englisch), in einem Abruf
+fn labels(agent: &ureq::Agent, ids: &[String]) -> std::collections::HashMap<String, (String, Value)> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in ids.chunks(45) {
+        let url = format!("https://www.wikidata.org/w/api.php?action=wbgetentities&ids={}&props=labels|claims&languages=de|en&format=json", chunk.join("|"));
+        let Ok(v) = cached(agent, &url, Duration::from_secs(7 * DAY)) else { continue };
+        for (id, e) in v["entities"].as_object().into_iter().flatten() {
+            let l = e["labels"]["de"]["value"].as_str().or(e["labels"]["en"]["value"].as_str()).unwrap_or("").to_string();
+            out.insert(id.clone(), (l, e.clone()));
+        }
+    }
+    out
+}
+
+/// Commons-Datei -> Vorschaubild und Dateiseite
+fn commons(file: &str, width: u32) -> (String, String) {
+    let f = file.replace(' ', "_");
+    (format!("https://commons.wikimedia.org/wiki/Special:FilePath/{}?width={width}", enc(&f)), format!("https://commons.wikimedia.org/wiki/File:{}", enc(&f)))
+}
+
+/// Einleitung der deutschen Wikipedia (reiner Text)
+fn wiki_intro(agent: &ureq::Agent, title: &str) -> String {
+    let url = format!("https://de.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&redirects=1&format=json&titles={}", enc(title));
+    let Ok(v) = cached(agent, &url, Duration::from_secs(7 * DAY)) else { return String::new() };
+    v["query"]["pages"].as_object().and_then(|p| p.values().next()).map(|p| s(&p["extract"])).unwrap_or_default()
+}
+
+/// hoechstens n Zeichen, an einer Satzgrenze
+fn cut_sentences(t: &str, n: usize) -> String {
+    let t = t.split("\n").next().unwrap_or(t).lines().next().unwrap_or(t).trim();
+    if t.chars().count() <= n {
+        return t.to_string();
+    }
+    let head: String = t.chars().take(n).collect();
+    match head.rfind(". ") {
+        Some(i) if i > n / 3 => head[..=i].to_string(),
+        _ => format!("{}…", head.trim_end()),
+    }
 }
 
 /// Wert einer Wikidata-Eigenschaft: bevorzugter Rang, sonst der letzte Eintrag
@@ -206,12 +317,232 @@ pub async fn venue_info(name: String, city: String) -> Result<Venue, String> {
         if let Some(c) = claim(&e, "P1619") {
             v.opened = s(&c["time"]).trim_start_matches('+').chars().take(4).collect();
         }
+        if let Some(f) = claim(&e, "P18").and_then(|c| c.as_str()) {
+            (v.photo, v.photo_page) = commons(f, 640);
+        }
+        if let Some(c) = claim(&e, "P2130") {
+            if s(&c["unit"]).ends_with("/Q4916") {
+                v.cost_eur = s(&c["amount"]).trim_start_matches('+').parse::<f64>().unwrap_or(0.0) as u64;
+            }
+        }
+        if let Some(a) = claim(&e, "P84").map(|c| s(&c["id"])).filter(|a| !a.is_empty()) {
+            v.architect = labels(&agent, &[a.clone()]).get(&a).map(|x| x.0.clone()).unwrap_or_default();
+        }
+        if let Some(title) = e["sitelinks"]["dewiki"]["title"].as_str() {
+            let intro = wiki_intro(&agent, title);
+            v.features = features_of(&intro);
+            v.about = cut_sentences(&intro, 420);
+            v.wiki_url = format!("https://de.wikipedia.org/wiki/{}", enc(&title.replace(' ', "_")));
+        }
         if v.lat != 0.0 || v.lon != 0.0 {
             let (o, p) = osm(&agent, v.lat, v.lon, &name);
             v.outline = o;
             v.pitch = p;
         }
         Ok(v)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- Spielerprofil: ESPN (Steckbrief, Foto) + Wikidata (Foto, Vereinsstationen) ----------
+
+#[derive(Serialize, Default, Clone)]
+pub struct Station {
+    club: String,
+    from: String,
+    to: String,
+    apps: Option<u32>,
+    goals: Option<u32>,
+    loan: bool,
+    national: bool,
+}
+
+#[derive(Serialize, Default, Clone)]
+pub struct PlayerInfo {
+    name: String,
+    age: u32,
+    born: String,
+    height_cm: u32,
+    weight_kg: u32,
+    nation: String,
+    flag: String,
+    position: String,
+    /// ESPN-Portraet (gibt es im Fussball nur fuer manche) und Foto aus Wikimedia Commons
+    headshot: String,
+    photo: String,
+    photo_page: String,
+    /// Vereinsstationen (Wikidata P54), neueste zuerst; ohne Abloesesummen
+    career: Vec<Station>,
+    /// Transfermarkt-Kennung (Wikidata P2446) — nur fuer einen Link
+    transfermarkt: String,
+    wikidata: String,
+}
+
+fn year(v: &Value) -> String {
+    s(&v["time"]).trim_start_matches('+').chars().take(4).collect()
+}
+
+/// Wikidata-Eintrag eines Fussballers: Name, Beruf Fussballspieler (Q937857), Geburtsjahr passt
+fn player_entity(agent: &ureq::Agent, name: &str, born: &str) -> Option<(String, Value)> {
+    let ttl = Duration::from_secs(7 * DAY);
+    for lang in ["de", "en"] {
+        let url = format!("https://www.wikidata.org/w/api.php?action=wbsearchentities&search={}&language={lang}&type=item&format=json&limit=6", enc(name));
+        let Ok(v) = cached(agent, &url, ttl) else { continue };
+        for h in v["search"].as_array().into_iter().flatten().take(5) {
+            let id = s(&h["id"]);
+            let Ok(ent) = cached(agent, &format!("https://www.wikidata.org/wiki/Special:EntityData/{id}.json"), ttl) else { continue };
+            let e = ent["entities"][&id].clone();
+            let footballer = e["claims"]["P106"].as_array().into_iter().flatten().any(|c| s(&c["mainsnak"]["datavalue"]["value"]["id"]) == "Q937857");
+            let by = claim(&e, "P569").map(year).unwrap_or_default();
+            if footballer && (born.is_empty() || by.is_empty() || by == born) {
+                return Some((id, e));
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn player_info(id: String, path: String, name: String) -> Result<PlayerInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ok = |x: &str| !x.is_empty() && x.len() < 40 && x.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+        if !ok(&id) || !ok(&path) {
+            return Err("unbekannter Spieler".into());
+        }
+        let agent = feed::agent();
+        let mut p = PlayerInfo { name: name.clone(), ..Default::default() };
+        if let Ok(a) = cached(&agent, &format!("{CORE}/soccer/leagues/{path}/athletes/{id}"), Duration::from_secs(DAY)) {
+            if !s(&a["displayName"]).is_empty() {
+                p.name = s(&a["displayName"]);
+            }
+            p.age = a["age"].as_u64().unwrap_or(0) as u32;
+            p.born = s(&a["dateOfBirth"]).chars().take(10).collect();
+            // ESPN: Zoll und Pfund
+            p.height_cm = (a["height"].as_f64().unwrap_or(0.0) * 2.54).round() as u32;
+            p.weight_kg = (a["weight"].as_f64().unwrap_or(0.0) * 0.4536).round() as u32;
+            p.nation = s(&a["citizenship"]);
+            p.flag = s(&a["flag"]["href"]);
+            p.position = s(&a["position"]["displayName"]);
+            p.headshot = s(&a["headshot"]["href"]);
+        }
+        let born_year: String = p.born.chars().take(4).collect();
+        if let Some((qid, e)) = player_entity(&agent, &p.name, &born_year) {
+            p.wikidata = qid;
+            if let Some(f) = claim(&e, "P18").and_then(|c| c.as_str()) {
+                (p.photo, p.photo_page) = commons(f, 400);
+            }
+            p.transfermarkt = claim(&e, "P2446").map(s).unwrap_or_default();
+            let stations: Vec<&Value> = e["claims"]["P54"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+            let mut ids: Vec<String> = stations.iter().map(|c| s(&c["mainsnak"]["datavalue"]["value"]["id"])).filter(|x| !x.is_empty()).collect();
+            // Art des Wechsels (Leihe, Transfer …) steht als Eintrag in P1642
+            for c in &stations {
+                for q in c["qualifiers"]["P1642"].as_array().into_iter().flatten() {
+                    ids.push(s(&q["datavalue"]["value"]["id"]));
+                }
+            }
+            ids.sort();
+            ids.dedup();
+            let lab = labels(&agent, &ids);
+            for c in stations {
+                let club = s(&c["mainsnak"]["datavalue"]["value"]["id"]);
+                let Some((label, ent)) = lab.get(&club) else { continue };
+                let q = &c["qualifiers"];
+                let first = |k: &str| q[k].as_array().and_then(|a| a.first()).map(|x| &x["datavalue"]["value"]);
+                let num = |k: &str| first(k).and_then(|v| s(&v["amount"]).trim_start_matches('+').parse::<u32>().ok());
+                let loan = q["P1642"].as_array().into_iter().flatten().any(|x| {
+                    lab.get(&s(&x["datavalue"]["value"]["id"])).is_some_and(|(l, _)| { let l = l.to_lowercase(); l.contains("leih") || l.contains("loan") })
+                });
+                let national = ent["claims"]["P31"].as_array().into_iter().flatten().any(|x| s(&x["mainsnak"]["datavalue"]["value"]["id"]) == "Q6979593")
+                    || label.to_lowercase().contains("nationalmannschaft");
+                p.career.push(Station {
+                    club: label.clone(),
+                    from: first("P580").map(year).unwrap_or_default(),
+                    to: first("P582").map(year).unwrap_or_default(),
+                    apps: num("P1350"),
+                    goals: num("P1351"),
+                    loan,
+                    national,
+                });
+            }
+            // neueste zuerst; laufende Stationen (ohne Ende) ganz oben
+            p.career.sort_by(|a, b| (b.to.is_empty(), &b.from, &b.to).cmp(&(a.to.is_empty(), &a.from, &a.to)));
+        }
+        Ok(p)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- Aufstellungen der letzten Spiele ----------
+
+#[derive(Serialize, Clone)]
+pub struct LineupGame {
+    event: String,
+    date: u64,
+    home: bool,
+    opp: feed::Team,
+    score: String,
+    /// s(ieg) u(nentschieden) n(iederlage)
+    result: String,
+    comp: String,
+    lineup: crate::info::Lineup,
+}
+
+/// Startelf des Teams in seinen letzten (bis zu fuenf) beendeten Ligaspielen, neueste zuerst
+#[tauri::command]
+pub async fn recent_lineups(team: String) -> Result<Vec<LineupGame>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (sport, id) = team.split_once(':').ok_or("unbekanntes Team")?;
+        if sport != "soccer" || !id.chars().all(|c| c.is_ascii_digit()) {
+            return Err("Aufstellungen gibt es für Fußballteams aus ESPN-Wettbewerben.".into());
+        }
+        let agent = feed::agent();
+        let path = home_paths(&agent, sport, id).into_iter().next().ok_or("Liga des Teams unbekannt")?;
+        let sched = cached(&agent, &format!("{ESPN}/soccer/{path}/teams/{id}/schedule"), Duration::from_secs(1800))?;
+        let mut past: Vec<(u64, Value)> = sched["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["competitions"][0]["status"]["type"]["completed"].as_bool() == Some(true))
+            .map(|e| (feed::parse_utc(&s(&e["date"])).unwrap_or(0), e.clone()))
+            .collect();
+        past.sort_by_key(|x| std::cmp::Reverse(x.0));
+        past.truncate(5);
+        let comp = feed::league(&path).map(|l| l.name).or_else(|| LEAGUES.iter().find(|l| l.espn.contains(&path)).map(|l| l.name)).unwrap_or("").to_string();
+        let games: Vec<Option<LineupGame>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = past
+                .iter()
+                .map(|(date, e)| {
+                    let (agent, path, id, comp) = (&agent, path, id, &comp);
+                    sc.spawn(move || {
+                        let eid = s(&e["id"]);
+                        let sum = cached(agent, &format!("{ESPN}/soccer/{path}/summary?event={eid}"), Duration::from_secs(DAY)).ok()?;
+                        let r = sum["rosters"].as_array()?.iter().find(|r| s(&r["team"]["id"]) == id)?;
+                        let lineup = crate::info::lineup_of(r);
+                        let cs = e["competitions"][0]["competitors"].as_array()?;
+                        let me = cs.iter().find(|c| s(&c["id"]) == id || s(&c["team"]["id"]) == id)?;
+                        let other = cs.iter().find(|c| !std::ptr::eq(*c, me))?;
+                        let sc_of = |c: &Value| { let v = &c["score"]; if v.is_object() { s(&v["displayValue"]) } else { s(v) } };
+                        let (a, b) = (sc_of(me), sc_of(other));
+                        let (na, nb) = (a.parse::<i32>().unwrap_or(0), b.parse::<i32>().unwrap_or(0));
+                        let home = s(&me["homeAway"]) == "home";
+                        Some(LineupGame {
+                            event: eid,
+                            date: *date,
+                            home,
+                            opp: feed::team_of(other, "soccer"),
+                            score: format!("{a}:{b}"),
+                            result: if na > nb { "s" } else if na < nb { "n" } else { "u" }.into(),
+                            comp: comp.clone(),
+                            lineup,
+                        })
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().ok().flatten()).collect()
+        });
+        Ok(games.into_iter().flatten().filter(|g| !g.lineup.formation.is_empty() || g.lineup.players_len() > 0).collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -335,6 +666,17 @@ mod tests {
     }
 
     #[test]
+    fn besonderheiten() {
+        let f = features_of("Mit 81.365 Zuschauerplätzen ist es das größte Fußballstadion Deutschlands. Davon sind 24.454 Stehplätze auf der Südtribüne.");
+        assert_eq!(f.standing, 24454);
+        assert_eq!(f.record, "das größte Fußballstadion Deutschlands");
+        assert!(!f.track && !f.retractable);
+        let g = features_of("Die Arena hat ein verschließbares Dach, der Rasen ist herausfahrbar. Früher mit Laufbahn für Leichtathletik.");
+        assert!(g.retractable && g.slide_pitch && g.track);
+        assert!(!features_of("Ein reines Fußballstadion ohne Laufbahn.").track);
+    }
+
+    #[test]
     fn spielerwerte() {
         let v = serde_json::json!({ "splits": { "categories": [
             { "name": "general", "stats": [{ "name": "minutes", "value": 261.0 }, { "name": "duelsWon", "value": 12.0 }, { "name": "duels", "value": 26.0 }] },
@@ -348,13 +690,21 @@ mod tests {
     #[test]
     #[ignore]
     fn mehr_quellen() {
-        let (v, k, l) = tauri::async_runtime::block_on(async {
-            (venue_info("BayArena".into(), "Leverkusen".into()).await, squad_stats("soccer:131".into()).await, league_meta().await)
+        let (v, k, l, pl, rl, v2) = tauri::async_runtime::block_on(async {
+            (venue_info("BayArena".into(), "Leverkusen".into()).await, squad_stats("soccer:131".into()).await, league_meta().await,
+             player_info("212330".into(), "ger.1".into(), "Patrik Schick".into()).await, recent_lineups("soccer:131".into()).await, venue_info("Signal Iduna Park".into(), "Dortmund".into()).await)
         });
         let v = v.expect("Stadion");
         if let Ok(path) = std::env::var("ARENA_DUMP") {
-            let _ = std::fs::write(&path, serde_json::json!({ "venue": v, "squad": k.as_ref().ok(), "leagues": l }).to_string());
+            let _ = std::fs::write(&path, serde_json::json!({ "venue": v, "squad": k.as_ref().ok(), "leagues": l, "player": pl.as_ref().ok(), "lineups": rl.as_ref().ok(), "venue2": v2.as_ref().ok() }).to_string());
         }
+        if let Ok(v2) = &v2 { println!("SIP: Besonderheiten Stehplaetze {} Rekord {:?} Laufbahn {} Dach {}", v2.features.standing, v2.features.record, v2.features.track, v2.features.retractable); }
+        let pl = pl.expect("Spieler");
+        println!("Spieler {} ({} J., {} cm, {}), Foto {}, Stationen {}, TM {}", pl.name, pl.age, pl.height_cm, pl.nation, !pl.photo.is_empty(), pl.career.len(), pl.transfermarkt);
+        for st in pl.career.iter().take(4) { println!("  {} {}–{} {:?}/{:?} Leihe {} NM {}", st.club, st.from, st.to, st.apps, st.goals, st.loan, st.national); }
+        let rl = rl.expect("Aufstellungen");
+        for g in &rl { println!("  Aufstellung {} gegen {} {} ({}), {} Spieler", g.lineup.formation, g.opp.name, g.score, g.result, g.lineup.players_len()); }
+        println!("Stadion: Foto {}, Architekt {}, Kosten {}, Besonderheiten {} {} {} {} {:?}", !v.photo.is_empty(), v.architect, v.cost_eur, v.features.track, v.features.retractable, v.features.standing, v.features.slide_pitch, v.features.record);
         println!("{}: {} Plaetze, eroeffnet {}, Grundriss {} Punkte, Feld {} Punkte ({})", v.name, v.capacity, v.opened, v.outline.len(), v.pitch.len(), v.wikidata);
         let k = k.expect("Kader");
         let best = k.iter().max_by(|a, b| a.goals.partial_cmp(&b.goals).unwrap()).unwrap();

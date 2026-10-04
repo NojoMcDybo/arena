@@ -25,7 +25,9 @@ import { arrange, CARD_NAME, move, PHASE_NAME, phaseOf, reset as resetLayout, sa
 import { radarEl, scale } from "./radar";
 import type { Venue } from "./stadium";
 import { crestOf, DEFAULT_SPORT, renderSettings, type FavTeam, type LeagueInfo, type Snapshot } from "./settings-ui";
-import { card, detailCards, type MatchDetail } from "./detail-ui";
+import { card, detailCards, hooks, type MatchDetail, type Player } from "./detail-ui";
+import { FormationPitch } from "./formation";
+import { LineupHistory, type LineupGame } from "./history";
 import { classify, initLaya, installLaya, labelOf, layaStatus, layaWork, onLaya, retryLaya, uninstallLaya } from "./laya/client";
 import { KIND_DE, MIN_P, TRANSFER_KINDS, type Kind } from "./laya/questions";
 
@@ -281,8 +283,9 @@ function focusEl(f: SportMatch) {
   bar.dataset.key = "arrange-slot";
   bar.dataset.keep = "";
   body.append(lane("lane-main"), lane("lane-side"));
+  const hero = lane("lane-hero");
   crestDots.set(f.home, f.away);
-  wrap.append(crestDots.el, head, score, bar, body);
+  wrap.append(crestDots.el, head, score, bar, hero, body);
   return wrap;
 }
 
@@ -301,8 +304,18 @@ function setArranging(on: boolean) {
   renderLive();
 }
 
-/** Spielfeld: Ballverlauf (Fussball) bzw. Wurfbild (Basketball); leer, solange es nichts gibt */
-function fieldCard(f: SportMatch): HTMLElement | null {
+/** Aufstellung auf dem Spielfeld (vor dem Spiel, sobald ESPN sie kennt) */
+const lineupPitch = new FormationPitch("fp-match");
+lineupPitch.pick((p, t) => openPlayerSheet(p, t));
+
+/** Spielfeld: Ballverlauf (Fussball) bzw. Wurfbild (Basketball); vor dem Spiel die Aufstellungen darauf */
+function fieldCard(f: SportMatch, d: MatchDetail | null): HTMLElement | null {
+  if (f.sport === "soccer" && f.state === "pre" && (d?.lineup_home?.players.length || d?.lineup_away?.players.length)) {
+    lineupPitch.match(f.home, d.lineup_home, f.away, d.lineup_away);
+    const c = card("Aufstellung", "voraussichtlich · Spieler antippen: Profil", "pitch-card lineup-pitch-card");
+    c.append(lineupPitch.el);
+    return c;
+  }
   if (f.sport === "soccer") {
     pitch.setMatch(f);
     if (f.source !== "espn") pitch.idle("Ballverlauf gibt es nur für ESPN-Wettbewerbe");
@@ -320,6 +333,23 @@ function fieldCard(f: SportMatch): HTMLElement | null {
   return null;
 }
 
+const lineupGames = new Map<string, Promise<LineupGame[]>>();
+const history = new LineupHistory(
+  (team) => {
+    let p = lineupGames.get(team);
+    if (!p) { p = invoke<LineupGame[]>("recent_lineups", { team }); lineupGames.set(team, p); p.catch(() => lineupGames.delete(team)); }
+    return p;
+  },
+  (p, t) => openPlayerSheet(p, t),
+);
+
+function historyCard(f: SportMatch) {
+  history.setMatch(f, !isFavTeam(f.home) && isFavTeam(f.away) ? "away" : "home");
+  const c = card("Letzte Aufstellungen", "Startelf · ‹ › blättern", "history-card");
+  c.append(history.el);
+  return c;
+}
+
 function tickerCard(f: SportMatch) {
   const c = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
   c.append(tickerEl(f, 24));
@@ -334,7 +364,7 @@ function applyLayout(f: SportMatch, l: Lanes) {
 }
 
 /** Werkzeuge einer Karte beim Anordnen: Griff, hoch, runter, andere Spalte, ausblenden */
-function cardTools(f: SportMatch, l: Lanes, id: CardId, lane: "main" | "side") {
+function cardTools(f: SportMatch, l: Lanes, id: CardId, lane: "hero" | "main" | "side") {
   const t = el("div", "c-tools");
   t.dataset.key = "tools";
   const grip = el("span", "c-grip");
@@ -349,9 +379,9 @@ function cardTools(f: SportMatch, l: Lanes, id: CardId, lane: "main" | "side") {
     x.onclick = (e) => { e.stopPropagation(); applyLayout(f, move(l, id, how)); };
     return x;
   };
-  t.append(grip, b("up", "Nach oben", "up"), b("down", "Nach unten", "down"),
-    b(lane === "main" ? "next" : "prev", lane === "main" ? "In die rechte Spalte" : "In die linke Spalte", "swap"),
-    b("eye-off", "Ausblenden", "hide"));
+  t.append(grip, b("up", "Nach oben", "up"), b("down", "Nach unten", "down"));
+  if (lane !== "hero") t.append(b(lane === "main" ? "next" : "prev", lane === "main" ? "In die rechte Spalte" : "In die linke Spalte", "swap"));
+  t.append(lane === "hero" ? b("fullscreen-exit", "Zurück in die Spalte", "wide") : b("fullscreen", "Volle Breite", "wide"), b("eye-off", "Ausblenden", "hide"));
   return t;
 }
 
@@ -404,7 +434,7 @@ function sortableFor(lane: HTMLElement) {
         const f = focusMatch();
         if (!f) return;
         const ids = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(`${sel} > [data-card]`)).map((c) => c.dataset.card as CardId);
-        applyLayout(f, { main: ids(".lane-main"), side: ids(".lane-side"), hidden: lastLanes?.hidden ?? [] });
+        applyLayout(f, { hero: ids(".lane-hero"), main: ids(".lane-main"), side: ids(".lane-side"), hidden: lastLanes?.hidden ?? [] });
       },
     });
     sortables.set(lane, s);
@@ -433,8 +463,8 @@ function venueFor(d: MatchDetail | undefined): { v: Venue | null; loading: boole
 }
 
 function renderDetail(f: SportMatch) {
-  const lm = q(".lane-main"), ls = q(".lane-side"), slot = q(".arrange-slot");
-  if (!lm || !ls || !slot || dragging) return;
+  const lh = q(".lane-hero"), lm = q(".lane-main"), ls = q(".lane-side"), slot = q(".arrange-slot");
+  if (!lh || !lm || !ls || !slot || dragging) return;
   // OpenLigaDB: keine Analyse — die Karten stehen trotzdem da, leer
   const espn = !f.key.startsWith("oldb/");
   if (espn) {
@@ -452,26 +482,29 @@ function renderDetail(f: SportMatch) {
   const cur = espn ? details.get(f.key) : undefined;
   const ven = espn ? venueFor(cur?.d) : { v: null, loading: false };
   const sig = JSON.stringify([f.key, cur?.at, !!cur?.d, f.state, f.clock, f.home.score, f.away.score, f.events.map((e) => e.id),
-    ven.loading, !!ven.v, noLive(f), arranging, layoutRev]);
+    ven.loading, !!ven.v, noLive(f), arranging, layoutRev, sheetKind === "player"]);
   if (sig === detailSig) return;
   detailSig = sig;
   const cards = detailCards(f, cur?.d ?? null, ven.v, ven.loading);
-  const field = fieldCard(f);
+  const field = fieldCard(f, cur?.d ?? null);
   if (field) cards.set("field", field);
+  if (f.sport === "soccer" && espn) cards.set("history", historyCard(f));
   // Basketball hat keinen Ticker (die Wuerfe stehen im Wurfbild)
   if (f.sport !== "basketball") cards.set("ticker", tickerCard(f));
   const l = arrange(f.sport, f.state, [...cards.keys()]);
   lastLanes = l;
-  const put = (ids: CardId[], lane: "main" | "side") => ids.map((id) => {
+  const put = (ids: CardId[], lane: "hero" | "main" | "side") => ids.map((id) => {
     const c = cards.get(id)!;
     c.dataset.key = `c:${id}`;
     c.dataset.card = id;
     if (arranging) c.querySelector(".c-head")?.append(cardTools(f, l, id, lane));
     return c;
   });
+  morph(lh, put(l.hero, "hero"));
   morph(lm, put(l.main, "main"));
   morph(ls, put(l.side, "side"));
   morph(slot, arranging ? [arrangeBar(f, l)] : []);
+  sortableFor(lh);
   sortableFor(lm);
   sortableFor(ls);
   alignLive();
@@ -987,11 +1020,11 @@ async function renderTeams() {
 
 // ---------- Seitenblatt ----------
 
-let sheetKind: "" | "settings" | "team" = "";
+let sheetKind: "" | "settings" | "team" | "player" = "";
 let sheetTeam: FavTeam | null = null;
 let sheetTab: "games" | "squad" = "games";
 
-function openSheet(kind: "settings" | "team", title: string | HTMLElement) {
+function openSheet(kind: "settings" | "team" | "player", title: string | HTMLElement) {
   sheetKind = kind;
   q(".sheet-title").replaceChildren(title);
   q(".backdrop").hidden = false;
@@ -1145,7 +1178,10 @@ function loadSquadStats(key: string): SquadState {
   invoke<PlayerStats[]>("squad_stats", { key })
     .then((v) => squadStats.set(key, { v }))
     .catch((e) => squadStats.set(key, { err: String(e) }))
-    .finally(() => { if (sheetTeam?.key === key && sheetTab === "squad") renderSheetTeam(); });
+    .finally(() => {
+      if (sheetTeam?.key === key && sheetTab === "squad") renderSheetTeam();
+      if (sheetKind === "player" && sheetPlayer?.team.id === key) renderSheetPlayer();
+    });
   return n;
 }
 
@@ -1209,6 +1245,119 @@ function playerRadar(p: PlayerStats, all: PlayerStats[], color: string) {
   return box;
 }
 
+// ---------- Spielerprofil (more.rs player_info): Foto, Steckbrief, Radar, Vereinsstationen ----------
+
+type Station = { club: string; from: string; to: string; apps: number | null; goals: number | null; loan: boolean; national: boolean };
+type PlayerInfo = { name: string; age: number; born: string; height_cm: number; weight_kg: number; nation: string; flag: string; position: string;
+  headshot: string; photo: string; photo_page: string; career: Station[]; transfermarkt: string; wikidata: string };
+const playerInfos = new Map<string, { v?: PlayerInfo; err?: string }>();
+let sheetPlayer: { id: string; name: string; team: SportTeam; path: string } | null = null;
+
+/** Liga-Pfad fuer ESPN-Spielerdaten: aus dem angesehenen Spiel ("soccer/ger.1:…"), Testspiele ueber die Bundesliga */
+function pathOfFocus() {
+  const k = focusMatch()?.key ?? "";
+  const path = k.split(":")[0].split("/")[1] ?? "";
+  return path && path !== "club.friendly" ? path : "ger.1";
+}
+
+function openPlayerSheet(p: Pick<Player, "id" | "name">, team: SportTeam, path = pathOfFocus()) {
+  if (!p.id) return;
+  sheetPlayer = { id: p.id, name: p.name, team, path };
+  const title = el("span", "sheet-team");
+  title.append(crestEl(team), p.name);
+  openSheet("player", title);
+  renderSheetPlayer();
+  if (!playerInfos.has(p.id)) {
+    playerInfos.set(p.id, {});
+    invoke<PlayerInfo>("player_info", { id: p.id, path, name: p.name })
+      .then((v) => playerInfos.set(p.id, { v }))
+      .catch((e) => playerInfos.set(p.id, { err: String(e) }))
+      .finally(() => { if (sheetPlayer?.id === p.id) renderSheetPlayer(); });
+  }
+}
+
+function renderSheetPlayer() {
+  const sp = sheetPlayer;
+  if (!sp || sheetKind !== "player") return;
+  const box = q(".sheet-body");
+  const c = playerInfos.get(sp.id);
+  const v = c?.v;
+  const out: HTMLElement[] = [];
+  // Kopf: Foto (ESPN-Portraet, sonst Wikimedia Commons, sonst Rueckennummer), Name, Steckbrief
+  const head = el("section", "pp-head n-card");
+  head.dataset.key = "pp-head";
+  head.style.setProperty("--tc", sp.team.color);
+  const pic = el("div", "pp-pic");
+  const src = v?.headshot || v?.photo;
+  if (src) {
+    const img = new Image();
+    img.alt = sp.name;
+    img.src = src;
+    img.onerror = () => { if (v?.photo && img.src !== v.photo && src !== v.photo) img.src = v.photo; else img.remove(); };
+    pic.append(img);
+  } else pic.append(el("span", "pp-init", sp.name.split(/\s+/).map((x) => x[0]).slice(0, 2).join("")));
+  const info = el("div", "pp-info");
+  info.append(el("b", "pp-name", v?.name || sp.name), el("span", "pp-pos", v?.position || (c && !v ? "" : "…")));
+  const facts = el("div", "pp-facts");
+  const fact = (k: string, val: string) => { if (!val) return; const f = el("span", ""); f.append(el("b", "", val), el("small", "", k)); facts.append(f); };
+  if (v) {
+    fact("Alter", v.age ? `${v.age}` : "");
+    fact("Größe", v.height_cm ? `${v.height_cm} cm` : "");
+    fact("Gewicht", v.weight_kg ? `${v.weight_kg} kg` : "");
+    if (v.nation) {
+      const n = el("span", "pp-nation");
+      if (v.flag) { const f = new Image(); f.src = v.flag; f.alt = ""; f.onerror = () => f.remove(); n.append(f); }
+      n.append(el("b", "", v.nation));
+      facts.append(n);
+    }
+  }
+  info.append(facts);
+  head.append(pic, info);
+  if (v?.photo && !v.headshot) {
+    const cr = el("button", "pp-credit", "Foto: Wikimedia Commons");
+    cr.onclick = () => void invoke("open_link", { url: v.photo_page }).catch(() => {});
+    head.append(cr);
+  }
+  out.push(head);
+  if (c?.err) out.push(faint(c.err, "faint"));
+  // Radar aus den Saisonwerten des Kaders (Fussball)
+  if (sp.team.id.startsWith("soccer:")) {
+    const st = loadSquadStats(sp.team.id);
+    const ps = st.v?.find((x) => x.id === sp.id) ?? st.v?.find((x) => x.name === sp.name);
+    const rc = card("Spielerqualität", "Saison · je 90 Minuten", "pp-radar");
+    rc.dataset.key = "pp-radar";
+    if (ps && st.v) rc.append(playerRadar(ps, st.v, sp.team.color || "#75b8ff"));
+    else rc.append(faint(st.loading ? "Saisonwerte werden geladen …" : st.err ?? "Keine Saisonwerte für diesen Spieler (nur der aktuelle Kader des Teams)", "faint c-empty"));
+    out.push(rc);
+  }
+  // Vereinsstationen (Wikidata) — Abloesesummen gibt es nicht frei
+  const cc = card("Vereinsstationen", v?.career.length ? "Wikidata · ohne Ablösesummen" : "", "pp-career");
+  cc.dataset.key = "pp-career";
+  if (v?.career.length) {
+    const ol = el("ol", "pp-stations");
+    for (const st of v.career) {
+      const li = el("li", (st.national ? "nat" : "") + (st.loan ? " loan" : "") + (!st.to ? " now" : ""));
+      li.dataset.key = `${st.club}:${st.from}`;
+      li.append(el("span", "pp-years", `${st.from || "?"}–${st.to || "heute"}`), el("b", "pp-club", st.club));
+      const tags = el("span", "pp-tags");
+      if (st.loan) tags.append(el("span", "pp-tag", "Leihe"));
+      if (st.national) tags.append(el("span", "pp-tag", "Nationalteam"));
+      if (st.apps != null) tags.append(el("span", "pp-num", `${st.apps} Sp.${st.goals != null ? ` · ${st.goals} T.` : ""}`));
+      li.append(tags);
+      ol.append(li);
+    }
+    cc.append(ol);
+  } else cc.append(faint(!c || (!v && !c.err) ? "Wird geladen …" : "Keine Stationen gefunden", "faint c-empty"));
+  if (v?.transfermarkt) {
+    const tm = el("button", "n-btn ghost pp-tm", "Profil bei Transfermarkt (Marktwert, Transfers)");
+    tm.onclick = () => void invoke("open_link", { url: `https://www.transfermarkt.de/spieler/profil/spieler/${v.transfermarkt}` }).catch(() => {});
+    cc.append(tm);
+  }
+  out.push(cc);
+  out.push(faint("Steckbrief: ESPN · Foto und Stationen: Wikidata/Wikimedia Commons. Marktwerte und Ablösen sind nicht frei verfügbar – der Link führt zu Transfermarkt.", "faint fine"));
+  morph(box, out);
+}
+
 function squadEl(t: FavTeam): HTMLElement[] {
   const c = rosters.get(t.key);
   if (!c) {
@@ -1256,10 +1405,17 @@ function squadEl(t: FavTeam): HTMLElement[] {
       r.append(meta);
       if (p.injury) { const i = el("span", "pl-hurt", "verletzt"); i.title = p.injury; r.append(i); }
       out.push(r);
-      if (ps && openPlayer === p.name) out.push(playerRadar(ps, stats!.v!, colorOfTeam(t.key, t.name) || "#75b8ff"));
+      if (ps && openPlayer === p.name) {
+        const d = playerRadar(ps, stats!.v!, colorOfTeam(t.key, t.name) || "#75b8ff");
+        const prof = el("button", "n-btn ghost pd-profile", "Spielerprofil: Foto, Stationen");
+        const team: SportTeam = { id: t.key, name: t.name, short: t.name, abbr: "", logo: t.logo ?? "", color: colorOfTeam(t.key, t.name) || "#75b8ff", score: "" };
+        prof.onclick = () => openPlayerSheet({ id: ps.id, name: ps.name }, team, "");
+        d.append(prof);
+        out.push(d);
+      }
     }
   }
-  out.push(faint("Kader: ESPN. Marktwerte und Transferhistorie gibt es nicht frei abrufbar.", "faint fine"));
+  out.push(faint("Kader: ESPN. Vereinsstationen im Spielerprofil (Wikidata); Marktwerte und Ablösen gibt es nicht frei.", "faint fine"));
   return out;
 }
 
@@ -1349,6 +1505,7 @@ function onSettings(rerenderSheet = true) {
   if (view === "teams") void renderTeams();
   if (rerenderSheet && sheetKind === "settings" && !document.activeElement?.closest(".sheet-body input")) renderSheetSettings();
   if (sheetKind === "team") renderSheetTeam();
+  if (sheetKind === "player") renderSheetPlayer();
 }
 let lastLeagues = "";
 
@@ -1533,6 +1690,8 @@ async function setFull(on: boolean) {
 // ---------- Start ----------
 
 async function main() {
+  hooks.open = (url) => void invoke("open_link", { url }).catch(() => {});
+  hooks.player = (p, t) => openPlayerSheet(p, t);
   win = getCurrentWindow();
   windowControls({
     minimize: () => void win.minimize().catch(() => {}),

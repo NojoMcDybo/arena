@@ -166,6 +166,8 @@ pub fn run() {
             more::league_meta,
             more::venue_info,
             more::squad_stats,
+            more::player_info,
+            more::recent_lineups,
             laya::laya_status,
             laya::laya_install,
             laya::laya_uninstall,

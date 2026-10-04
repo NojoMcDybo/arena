@@ -1,25 +1,33 @@
-// Anordnung der Karten in der Live-Ansicht: zwei Spalten (breit: Hauptspalte, schmal: Seitenspalte), jede stapelt
-// ihre Karten ohne Luecken. Die Standard-Anordnung haengt von der Spielphase ab (nach „Dashboard Design Patterns“:
-// das Wichtigste der Situation oben links) — vor dem Spiel Prognose, Form und direkter Vergleich, waehrend des
-// Spiels Spielfeld, Statistik und Ticker, danach Statistik und Analyse. Wer umstellt, aendert nur die Anordnung
-// dieser Sportart in dieser Phase; „Standard“ nimmt sie zurueck.
+// Anordnung der Karten in der Live-Ansicht: oben eine volle Breite (das Spielfeld — die groesste Karte), darunter
+// zwei Spalten, jede stapelt ihre Karten ohne Luecken. Die Standard-Anordnung haengt von der Spielphase ab (nach
+// „Dashboard Design Patterns“: das Wichtigste der Situation zuerst) und haelt zusammen, was zusammengehoert:
+//   Spielfeld + Aufstellung (vor dem Spiel steht die Aufstellung auf dem Feld), Statistik + Teamvergleich
+//   (dieselben Zahlen, einmal als Radar), Ticker + Druckphasen (der Verlauf), Prognose + Form + Vergleich
+//   (Einschaetzung vor dem Spiel), Aufstellung + letzte Aufstellungen.
+// Wer umstellt, aendert nur die Anordnung dieser Sportart in dieser Phase; „Standard“ nimmt sie zurueck.
 
-export type CardId = "field" | "ticker" | "odds" | "form" | "h2h" | "pulse" | "stats" | "radar" | "lineup" | "stadium";
+export type CardId = "field" | "ticker" | "odds" | "form" | "h2h" | "pulse" | "stats" | "radar" | "lineup" | "stadium" | "history";
 export type Phase = "pre" | "in" | "post";
-export type Lanes = { main: CardId[]; side: CardId[]; hidden: CardId[] };
+export type Lanes = { hero: CardId[]; main: CardId[]; side: CardId[]; hidden: CardId[] };
+type Lane = keyof Lanes;
+const LANES: Lane[] = ["hero", "main", "side", "hidden"];
 
 export const CARD_NAME: Record<CardId, string> = {
   field: "Spielfeld", ticker: "Ticker", odds: "Prognose", form: "Form", h2h: "Direkter Vergleich", pulse: "Druckphasen",
-  stats: "Statistik", radar: "Teamvergleich", lineup: "Aufstellung", stadium: "Stadion",
+  stats: "Statistik", radar: "Teamvergleich", lineup: "Aufstellung", stadium: "Stadion", history: "Letzte Aufstellungen",
 };
 
 const DEFAULT: Record<Phase, Lanes> = {
-  pre: { main: ["odds", "form", "field", "radar", "stats"], side: ["h2h", "lineup", "stadium", "ticker"], hidden: ["pulse"] },
-  in: { main: ["field", "stats", "pulse", "radar"], side: ["ticker", "lineup", "stadium"], hidden: ["odds", "form", "h2h"] },
-  post: { main: ["stats", "radar", "pulse", "field"], side: ["ticker", "lineup", "stadium", "h2h"], hidden: ["odds", "form"] },
+  // vor dem Spiel: wer spielt (Aufstellung auf dem Feld), dann die Einschaetzung, dann die Teamstaerke
+  pre: { hero: ["field"], main: ["odds", "form", "h2h", "stats", "radar"], side: ["lineup", "history", "stadium"], hidden: ["ticker", "pulse"] },
+  // waehrend des Spiels: Feld, Zahlen (Statistik + Radar), Verlauf (Ticker + Druckphasen)
+  in: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "lineup", "stadium"], hidden: ["odds", "form", "h2h", "history"] },
+  // danach: das ganze Spiel auf dem Feld, die Bilanz, der Verlauf
+  post: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "lineup", "history", "stadium"], hidden: ["odds", "form", "h2h"] },
 };
 
-const KEY = "arena-layout-v1";
+// v2: volle Breite fuer das Spielfeld (Anordnungen aus v1 gelten nicht mehr)
+const KEY = "arena-layout-v2";
 
 function load(): Record<string, Lanes> {
   try {
@@ -37,33 +45,31 @@ function store(all: Record<string, Lanes>) {
 const phaseOf = (state: string): Phase => (state === "in" ? "in" : state === "post" ? "post" : "pre");
 const slot = (sport: string, state: string) => `${sport}:${phaseOf(state)}`;
 
-/** Standard dieser Sportart und Phase: Basketball stellt das Wurfbild nach dem Spiel nach vorn */
-function standard(sport: string, state: string): Lanes {
+/** Standard dieser Sportart und Phase */
+function standard(_sport: string, state: string): Lanes {
   const d = DEFAULT[phaseOf(state)];
-  const out = { main: [...d.main], side: [...d.side], hidden: [...d.hidden] };
-  if (sport === "basketball" && phaseOf(state) === "post") out.main = ["field", ...out.main.filter((x) => x !== "field")];
-  return out;
+  return { hero: [...d.hero], main: [...d.main], side: [...d.side], hidden: [...d.hidden] };
 }
 
-/** Anordnung fuer die vorhandenen Karten: gespeicherte (sonst Standard); neue Karten an ihren Standardplatz */
+/** Anordnung fuer die vorhandenen Karten: gespeicherte (sonst Standard); neue Karten an ihren Standardplatz.
+ * Ohne Spielfeld (z. B. Eishockey) bleibt die volle Breite leer. */
 export function arrange(sport: string, state: string, have: CardId[]): Lanes & { custom: boolean } {
   const def = standard(sport, state);
   const saved = load()[slot(sport, state)];
-  const base = saved ?? def;
+  const base: Partial<Lanes> = saved ?? def;
   const ok = (ids: unknown) => (Array.isArray(ids) ? ids : []).filter((x): x is CardId => have.includes(x as CardId));
-  const out: Lanes = { main: ok(base.main), side: ok(base.side), hidden: ok(base.hidden) };
-  const seen = new Set([...out.main, ...out.side, ...out.hidden]);
+  const out: Lanes = { hero: ok(base.hero), main: ok(base.main), side: ok(base.side), hidden: ok(base.hidden) };
+  const seen = new Set(LANES.flatMap((k) => out[k]));
   for (const id of have) {
     if (seen.has(id)) continue;
-    const lane = def.main.includes(id) ? "main" : def.side.includes(id) ? "side" : "hidden";
-    out[lane].push(id);
+    out[LANES.find((k) => def[k].includes(id)) ?? "hidden"].push(id);
   }
   return { ...out, custom: !!saved };
 }
 
 export function save(sport: string, state: string, lanes: Lanes) {
   const all = load();
-  all[slot(sport, state)] = { main: [...lanes.main], side: [...lanes.side], hidden: [...lanes.hidden] };
+  all[slot(sport, state)] = { hero: [...lanes.hero], main: [...lanes.main], side: [...lanes.side], hidden: [...lanes.hidden] };
   store(all);
 }
 
@@ -73,18 +79,20 @@ export function reset(sport: string, state: string) {
   store(all);
 }
 
-/** Karte bewegen: dy = -1/1 innerhalb der Spalte, swap = in die andere Spalte (oben einreihen) */
-export function move(l: Lanes, id: CardId, how: "up" | "down" | "swap" | "hide" | "show"): Lanes {
-  const out: Lanes = { main: [...l.main], side: [...l.side], hidden: [...l.hidden] };
-  const lane = (["main", "side", "hidden"] as const).find((k) => out[k].includes(id));
+/** Karte bewegen: hoch/runter in ihrer Reihe, in die andere Spalte, volle Breite an/aus, aus-/einblenden */
+export function move(l: Lanes, id: CardId, how: "up" | "down" | "swap" | "wide" | "hide" | "show"): Lanes {
+  const out: Lanes = { hero: [...l.hero], main: [...l.main], side: [...l.side], hidden: [...l.hidden] };
+  const lane = LANES.find((k) => out[k].includes(id));
   if (!lane) return out;
   const list = out[lane];
   const i = list.indexOf(id);
+  const to = (k: Lane, top = false) => { list.splice(i, 1); if (top) out[k].unshift(id); else out[k].push(id); };
   if (how === "up" && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
   else if (how === "down" && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
-  else if (how === "swap" && lane !== "hidden") { list.splice(i, 1); out[lane === "main" ? "side" : "main"].unshift(id); }
-  else if (how === "hide" && lane !== "hidden") { list.splice(i, 1); out.hidden.push(id); }
-  else if (how === "show" && lane === "hidden") { list.splice(i, 1); out.main.push(id); }
+  else if (how === "swap" && (lane === "main" || lane === "side")) to(lane === "main" ? "side" : "main", true);
+  else if (how === "wide") to(lane === "hero" ? "main" : "hero", lane === "hero");
+  else if (how === "hide" && lane !== "hidden") to("hidden");
+  else if (how === "show" && lane === "hidden") to("main");
   return out;
 }
 

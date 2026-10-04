@@ -173,6 +173,109 @@ main { height: 100%; overflow-y: auto; padding: 78px calc(var(--pad-x) + var(--n
 .big.arranging [data-card] { transition: box-shadow 0.2s var(--n-ease); }
 .big.arranging [data-card]:hover { box-shadow: 0 0 0 1px color-mix(in oklch, var(--n-ink) 14%, transparent); }
 .drag-ghost { opacity: 0.35; }
+/* volle Breite ueber den Spalten: das Spielfeld (groesste Karte), Hoehe am Fenster begrenzt */
+.lane-hero { margin-bottom: var(--gap); }
+.big:not(.arranging) .lane-hero:empty { display: none; }
+.lane-hero .pitch { max-width: calc(66vh * 111 / 74); }
+.lane-hero .court { max-width: calc(64vh * 98 / 54); }
+.lane-hero .fpitch { max-width: calc(64vh * 111 / 74); }
+.lane-hero .fp-name { display: block; }
+
+/* ---------- Aufstellung auf dem Feld (formation.ts) ---------- */
+.fpitch { position: relative; min-width: 0; margin: 0 auto; width: 100%; }
+.fp-svg { width: 100%; height: auto; display: block; }
+/* Spielflaeche im SVG: viewBox -3 -3 111 74 -> 3 Einheiten Rand */
+.fp-layer { position: absolute; left: calc(300% / 111); right: calc(300% / 111); top: calc(300% / 74); bottom: calc(300% / 74); }
+.fp-man { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 2px; translate: -50% -26%; z-index: 1;
+  transition: left 0.75s var(--n-ease), top 0.75s var(--n-ease), opacity 0.4s var(--n-ease), scale 0.4s var(--n-spring); }
+.fp-man b { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--tc); color: var(--ti, #fff);
+  font-size: 11px; font-weight: 750; box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55), 0 3px 10px rgba(0, 0, 0, 0.45); transition: scale 0.25s var(--n-spring), box-shadow 0.3s; }
+.fp-man:hover b, .fp-man:focus-visible b { scale: 1.14; }
+.fp-name { display: none; max-width: 86px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; color: var(--n-ink); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95); }
+.fp-man.named .fp-name { display: block; }
+.fp-man.enter, .fp-man.leave { opacity: 0; scale: 0.5; }
+.fp-man.fresh b { box-shadow: 0 0 0 2px var(--n-bg), 0 0 0 3.5px var(--n-accent), 0 3px 10px rgba(0, 0, 0, 0.45); }
+@media (max-width: 700px) { .fp-man b { width: 20px; height: 20px; font-size: 9.5px; } .fp-name { font-size: 9px; max-width: 60px; } }
+@media (prefers-reduced-motion: reduce) { .fp-man { transition: none; } }
+
+/* ---------- Letzte Aufstellungen (history.ts) ---------- */
+.lh { outline: none; }
+.lh-head { display: flex; gap: 8px; margin-bottom: 10px; }
+.lh-team { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px 0 6px; border-radius: 15px; font-size: 12px; color: var(--n-dim); box-shadow: inset 0 0 0 1px var(--n-line-2); transition: background 0.2s var(--n-ease), color 0.2s; }
+.lh-team .crest { width: 20px; height: 20px; }
+.lh-team.on { color: var(--n-ink); background: rgba(255, 255, 255, 0.1); box-shadow: none; }
+.lh-info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 10px 2px 8px; font-size: 12px; min-height: 24px; }
+.lh-form { font-size: 14px; font-weight: 700; }
+.lh-opp { display: inline-flex; align-items: center; gap: 5px; color: var(--n-dim); }
+.lh-opp b { color: var(--n-ink); }
+.lh-opp .crest { width: 18px; height: 18px; }
+.lh-res { font-weight: 750; padding: 2px 8px; border-radius: 7px; font-variant-numeric: tabular-nums; }
+.lh-res.r-s { background: color-mix(in oklch, var(--n-ok) 28%, transparent); }
+.lh-res.r-n { background: color-mix(in oklch, #ff453a 28%, transparent); }
+.lh-res.r-u { background: rgba(255, 255, 255, 0.1); }
+.lh-date { font-size: 11px; }
+.lh-fresh { font-size: 11px; color: var(--n-accent); }
+.lh-strip { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.lh-dot { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 8px 5px; border-radius: 10px; font-size: 10px; color: var(--n-faint); border-bottom: 2px solid transparent; transition: background 0.2s var(--n-ease), color 0.2s; }
+.lh-dot .crest { width: 20px; height: 20px; }
+.lh-dot.r-s { border-bottom-color: var(--n-ok); }
+.lh-dot.r-n { border-bottom-color: #ff453a; }
+.lh-dot.r-u { border-bottom-color: var(--n-faint); }
+.lh-dot.on { background: rgba(255, 255, 255, 0.09); color: var(--n-ink); }
+.lh-nav { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 10px; color: var(--n-dim); }
+.lh-nav:hover:not(:disabled) { color: var(--n-ink); background: rgba(255, 255, 255, 0.08); }
+.lh-nav:disabled { opacity: 0.3; cursor: default; }
+.lh-nav svg { width: 16px; height: 16px; }
+.lu-list li.pick { cursor: pointer; border-radius: 6px; }
+.lu-list li.pick:hover, .lu-list li.pick:focus-visible { background: rgba(255, 255, 255, 0.06); }
+
+/* ---------- Stadion: Foto, Besonderheiten ---------- */
+.st-photo { position: relative; margin: 0 0 12px; border-radius: var(--r-md); overflow: hidden; aspect-ratio: 16 / 7; background: rgba(255, 255, 255, 0.04); }
+.st-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.st-credit { position: absolute; right: 8px; bottom: 6px; font-size: 10px; color: rgba(255, 255, 255, 0.85); background: rgba(0, 0, 0, 0.45); padding: 2px 7px; border-radius: 6px; }
+.st-record { font-size: 12px; font-weight: 600; color: var(--n-ink); line-height: 1.35; }
+.st-feats { display: flex; flex-wrap: wrap; gap: 5px; }
+.st-feats:empty { display: none; }
+.st-feat { font-size: 10.5px; padding: 3px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); color: var(--n-dim); }
+.st-feat.hot { background: color-mix(in oklch, var(--hc, #ffd60a) 32%, transparent); color: var(--n-ink); }
+.st-about { margin: 10px 2px 0; font-size: 12px; line-height: 1.5; color: var(--n-dim); user-select: text; }
+.st-wiki { color: var(--n-accent); font-size: 12px; }
+.st-track { stroke: #d9734e; stroke-width: 1.8; stroke-linecap: round; opacity: 0.85; }
+.st-slide { fill: none; stroke: rgba(48, 209, 88, 0.75); stroke-width: 0.9; stroke-dasharray: 2 1.4; }
+.st-roof-close { stroke: rgba(255, 255, 255, 0.5); stroke-width: 0.8; stroke-dasharray: 2.5 2; }
+.st-tier.standing { fill: color-mix(in oklch, var(--hc, #ffd60a) 34%, rgba(255, 255, 255, 0.07)); }
+.st-fan { fill: var(--hc, #ffd60a); }
+.st-facade { stroke-width: 1.6; filter: drop-shadow(0 0 2px currentColor); }
+.st-label { font: 600 4px "Segoe UI", system-ui, sans-serif; fill: var(--n-dim); }
+
+/* ---------- Spielerprofil (Seitenblatt) ---------- */
+.pp-head { position: relative; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; align-items: center; padding: 16px;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--tc) 24%, var(--n-surface)), var(--n-surface) 72%); }
+.pp-pic { width: 96px; height: 96px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: color-mix(in oklch, var(--tc) 35%, #000); }
+.pp-pic img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 15%; }
+.pp-init { font-size: 30px; font-weight: 750; }
+.pp-name { display: block; font-size: 18px; font-weight: 700; }
+.pp-pos { font-size: 12px; color: var(--n-dim); }
+.pp-facts { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; }
+.pp-facts > span { display: flex; flex-direction: column; }
+.pp-facts b { font-size: 15px; }
+.pp-facts small { font-size: 10.5px; color: var(--n-faint); }
+.pp-facts .pp-nation { flex-direction: row; align-items: center; gap: 6px; }
+.pp-nation img { width: 20px; height: 14px; object-fit: cover; border-radius: 2px; }
+.pp-credit { position: absolute; right: 12px; bottom: 8px; font-size: 10px; color: var(--n-faint); }
+.pp-stations { list-style: none; margin: 0; padding: 0; }
+.pp-stations li { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 8px 2px; border-top: 1px solid var(--n-line); }
+.pp-stations li:first-child { border-top: 0; }
+.pp-years { font-size: 11.5px; color: var(--n-faint); font-variant-numeric: tabular-nums; }
+.pp-club { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-stations li.nat .pp-club { color: var(--n-dim); font-weight: 500; }
+.pp-stations li.now .pp-years { color: var(--n-accent); }
+.pp-tags { display: flex; gap: 6px; align-items: center; }
+.pp-tag { font-size: 10px; padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.08); color: var(--n-dim); }
+.pp-stations li.loan .pp-tag:first-child { color: var(--n-warn); }
+.pp-num { font-size: 11px; color: var(--n-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pp-tm { margin-top: 12px; }
+.pd-profile { margin-top: 10px; }
 .drag-chosen { box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45); }
 .slot-wait { padding: 8px 4px; }
 .pitch-card { padding-bottom: 14px; }
@@ -574,7 +677,8 @@ main.snap-days .day:not(.free) { scroll-snap-align: center; }
 .stadium { display: flex; flex-direction: column; gap: 12px; }
 .st-views { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .st-top { width: 100%; height: auto; max-height: 190px; }
-.st-side { width: 100%; height: auto; max-height: 80px; }
+/* Seitenansicht gross genug fuer die Besonderheiten (Stehtribuene, Laufbahn, Dach) */
+.st-side { width: 100%; height: auto; max-height: 170px; }
 .st-stand { fill: rgba(255, 255, 255, 0.07); stroke: rgba(255, 255, 255, 0.4); stroke-width: 0.8; stroke-linejoin: round; }
 .st-stand.dim, .st-tier.dim, .st-roof.dim, .st-post.dim { opacity: 0.35; }
 .st-field { fill: rgba(48, 209, 88, 0.22); stroke: rgba(255, 255, 255, 0.45); stroke-width: 0.6; }

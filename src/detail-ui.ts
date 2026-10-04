@@ -18,7 +18,7 @@ import { stadiumBody, type Venue } from "./stadium";
 
 export type Stat = { label: string; home: string; away: string; h: number; a: number };
 export type Pulse = { minute: number; side: string; w: number };
-export type Player = { jersey: string; name: string; pos: string; starter: boolean; sub_in: boolean; sub_out: boolean; place: number };
+export type Player = { id: string; jersey: string; name: string; pos: string; starter: boolean; sub_in: boolean; sub_out: boolean; place: number };
 export type Lineup = { formation: string; players: Player[] };
 export type FormGame = { r: "s" | "u" | "n"; score: string; opp: string; home: boolean; date: number; comp: string };
 export type H2h = { date: number; home: SportTeam; away: SportTeam };
@@ -27,6 +27,9 @@ export type MatchDetail = {
   venue: string; city: string; referee: string; attendance: number;
   odds: number[]; odds_by: string; form_home: FormGame[]; form_away: FormGame[]; h2h: H2h[];
 };
+
+/** von main.ts gesetzt: Link oeffnen (Browser), Spielerprofil oeffnen */
+export const hooks: { open: (url: string) => void; player: (p: Player, team: SportTeam) => void } = { open: () => {}, player: () => {} };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
   const e = document.createElement(tag);
@@ -205,6 +208,13 @@ function lineupCol(team: SportTeam, l: Lineup | null) {
     li.dataset.key = `${p.jersey}:${p.name}`;
     li.append(el("span", "lu-no", p.jersey || "·"), el("span", "lu-name", p.name), el("span", "lu-pos", p.pos));
     li.title = [p.name, p.sub_in ? "eingewechselt" : "", p.sub_out ? "ausgewechselt" : ""].filter(Boolean).join(" · ");
+    if (p.id) {
+      li.classList.add("pick");
+      li.tabIndex = 0;
+      li.title += " · Antippen: Spielerprofil";
+      li.onclick = () => hooks.player(p, team);
+      li.onkeydown = (e) => { if (e.key === "Enter") hooks.player(p, team); };
+    }
     return li;
   };
   if (l) list.append(...l.players.filter((p) => p.starter).map(row));
@@ -295,8 +305,9 @@ export function h2hCard(d: MatchDetail | null) {
 // ---------- Stadion ----------
 
 export function stadiumCard(m: SportMatch, d: MatchDetail | null, venue: Venue | null, loading: boolean) {
-  const c = card("Stadion", venue?.outline.length ? "von oben: OpenStreetMap · Plätze: Wikidata" : venue?.capacity ? "Plätze: Wikidata" : "");
-  c.append(stadiumBody(venue, m.sport, d?.venue ?? "", d?.city ?? "", loading));
+  const src = [venue?.outline.length ? "OpenStreetMap" : "", venue?.capacity ? "Wikidata" : "", venue?.about ? "Wikipedia" : ""].filter(Boolean).join(" · ");
+  const c = card("Stadion", src);
+  c.append(stadiumBody(venue, m.sport, d?.venue ?? "", d?.city ?? "", loading, m.home.color, hooks.open));
   const rows: [string, string][] = [["Schiedsrichter", d?.referee || "–"], ["Zuschauer", d && d.attendance > 0 ? d.attendance.toLocaleString("de-DE") : "–"]];
   const dl = el("dl", "info");
   for (const [k, v] of rows) dl.append(el("dt", "", k), el("dd", "", v));

@@ -26,6 +26,10 @@ Tastatur: Strg+1–4 wechselt die Ansicht, **F11** Vollbild (die Fensterknöpfe 
   Hinter Stand und Uhr die **Wappen als Punkteraster** (Canvas, Farbe und Größe der Punkte aus dem Wappen, zur Mitte hin auslaufend).
   **Stadion** von oben (echter Grundriss aus OpenStreetMap, massstabsgetreu mit Spielfeld) und von der Seite (Ränge nach Kapazität, Dach), Platzzahl aus Wikidata, ein Punkt je 1.000 Plätze. **Teamvergleich** als Radar (Ballbesitz, Schüsse, aufs Tor, Pass- und Zweikampfquote, Ecken).
 - **Spielplan:** jeder Tag des Zeitraums (spielfreie Tage schmal), je Tag die Ligen ohne Rahmen nebeneinander, jede in ihrer **Ligafarbe** (aus dem Logo gelesen); an der Spaltengrenze fließen die Farben ineinander (CSS-Verlauf in OKLCH). Spieltage rasten beim Scrollen in der Mitte ein; **Heute** (Knopf oder H) springt zum aktuellen Spieltag.
+- **Spielfeld als größte Karte** in voller Breite über den beiden Spalten; vor dem Spiel steht dort die (voraussichtliche) **Aufstellung beider Teams in ihrer Formation** (`src/formation.ts`: Reihen aus der Formation, Tiefe und Seite aus ESPNs Positionen wie CD-L, AM-R).
+- **Letzte Aufstellungen** (Karte): Startelf der letzten bis zu fünf Ligaspiele je Team zum Durchklicken (‹ › oder Pfeiltasten); die Spieler laufen an ihren neuen Platz, wer neu in der Startelf ist, bekommt einen Ring (`recent_lineups`).
+- **Spielerprofil** (Spieler in Aufstellung, auf dem Feld oder im Kader antippen): Foto (ESPN, sonst Wikimedia Commons), Steckbrief, **Radar der Spielerqualität** aus den Saisonwerten, **Vereinsstationen** aus Wikidata (Zeitraum, Spiele, Tore, Leihen, Nationalteam) und ein Link zu Transfermarkt. Ablösen und Marktwerte gibt es nicht frei.
+- **Stadion**: Foto, Superlativ, Architekt, Baukosten und die ersten Sätze der Wikipedia; Besonderheiten aus dem Wikipedia-Text (Stehplätze, Laufbahn, schließbares Dach, herausfahrbarer Rasen, Leuchtfassade) als Marken und in der Seitenansicht eingezeichnet.
 - **Karten anordnen** (Knopf mit dem Raster-Symbol im Spielkopf): Die Standard-Anordnung hängt von der Spielphase ab – vor dem Spiel Prognose, Form und direkter Vergleich oben, während des Spiels Spielfeld, Statistik und Ticker, danach Statistik und Analyse (`src/layout.ts`). Karten am Griff ziehen (SortableJS) oder mit den Pfeilen verschieben, in die andere Spalte setzen, ausblenden und über die Leiste zurückholen; **Standard** nimmt die eigene Anordnung zurück. Gespeichert je Sportart und Phase, Esc beendet das Anordnen.
 - **An der Notch ausgerichtet** (`src/notch-align.ts`, Lage aus `notch_rect`): Läuft die Notch, steht der Spielstand genau unter ihr und die Grenze der beiden Kartenspalten auf ihrer Mittelachse; liegt sie über dem Kopf, rücken die Reiter neben die Marke. Seitlich angedockt hält der Inhalt Abstand. Ohne Notch bleibt alles mittig.
 - **Hintergrund:** Nebel in den Farben aller gewählten Ligen, dazwischen dunkle Schwaden (`src/fog.ts`, Canvas in 1/10 Größe, 20 Bilder/s, steht bei „Bewegung reduzieren“).
@@ -62,6 +66,8 @@ Dieselben wie in der Notch, alle ohne Konto und Schlüssel (`src-tauri/src/feed.
 
 | Quelle | Wofür |
 |---|---|
+| Wikipedia (de, `action=query&prop=extracts`) | Stadion: Einleitung, Besonderheiten |
+| Wikidata P54/P18/P2446 | Spieler: Vereinsstationen, Foto, Transfermarkt-Link |
 | ESPN `site.api.espn.com` (inoffiziell) | Live-Stände, Ticker, Spielplan (Kalender der Spieltage, je Tag abgefragt), Team-Spielpläne |
 | ESPN `site.api.espn.com/apis/v2/…/standings` | Tabellen mit Zonen |
 | ESPN `sports.core.api.espn.com` | Ballaktionen mit Feldposition (Spielfeld), Würfe mit Ort (Basketball) |

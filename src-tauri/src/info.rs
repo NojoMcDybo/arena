@@ -59,6 +59,8 @@ pub struct Pulse {
 
 #[derive(Serialize, Clone)]
 pub struct Player {
+    /// ESPN-Spieler (fuer Spielerprofil und die Animation der Aufstellungen)
+    id: String,
     jersey: String,
     name: String,
     pos: String,
@@ -70,8 +72,14 @@ pub struct Player {
 
 #[derive(Serialize, Default, Clone)]
 pub struct Lineup {
-    formation: String,
+    pub(crate) formation: String,
     players: Vec<Player>,
+}
+
+impl Lineup {
+    pub(crate) fn players_len(&self) -> usize {
+        self.players.len()
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -223,7 +231,7 @@ fn pulse_of(commentary: &Value, home_name: &str, away_name: &str) -> Vec<Pulse> 
     out
 }
 
-fn lineup_of(r: &Value) -> Lineup {
+pub(crate) fn lineup_of(r: &Value) -> Lineup {
     let formation = match &r["formation"] {
         Value::String(x) => x.clone(),
         Value::Object(_) => s(&r["formation"]["name"]),
@@ -239,6 +247,7 @@ fn lineup_of(r: &Value) -> Lineup {
         .into_iter()
         .flatten()
         .map(|p| Player {
+            id: s(&p["athlete"]["id"]),
             jersey: s(&p["jersey"]),
             name: { let x = s(&p["athlete"]["shortName"]); if x.is_empty() { s(&p["athlete"]["displayName"]) } else { x } },
             pos: s(&p["position"]["abbreviation"]),
