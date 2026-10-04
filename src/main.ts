@@ -14,7 +14,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { glassLight, ICONS, lightScroller, liquid, segments, svgIcon, windowControls } from "./nojo/nojo-ui";
-import { bugEl, clockOf, crestEl, kickoff, Pitch, scoreOf, tickerEl, type SportMatch, type SportPlay, type SportState, type SportTeam } from "./sport-ui";
+import { bugEl, clockOf, Court, crestEl, kickoff, Pitch, scoreOf, tickerEl, type SportMatch, type SportPlay, type SportState, type SportTeam } from "./sport-ui";
+import { morph } from "./morph";
 import { crestOf, DEFAULT_SPORT, renderSettings, type FavTeam, type LeagueInfo, type Snapshot } from "./settings-ui";
 import { card, detailCards, type MatchDetail } from "./detail-ui";
 import { classify, initLaya, installLaya, labelOf, layaStatus, layaWork, onLaya, retryLaya, uninstallLaya } from "./laya/client";
@@ -38,6 +39,8 @@ let focusKey = "";
 let snap: Snapshot = { sport: { ...DEFAULT_SPORT }, notch: false, pending: false };
 let leagues: LeagueInfo[] = [];
 const pitch = new Pitch();
+/** Basketball: Wurfbild (Treffer und Fehlwuerfe) */
+const court = new Court();
 
 const DAY = 86_400_000;
 const SPORT_ORDER = ["soccer", "football", "basketball", "hockey", "baseball"];
@@ -101,7 +104,7 @@ function chip(text: string, on: boolean, click: () => void, title = "") {
   const b = el("button", "", text);
   b.setAttribute("aria-pressed", String(on));
   if (title) b.title = title;
-  b.addEventListener("click", click);
+  b.onclick = click;
   return b;
 }
 
@@ -139,6 +142,7 @@ function focusMatch(): SportMatch | undefined {
 
 function tile(m: SportMatch, on: boolean) {
   const b = el("button", `tile n-card ${m.state}` + (on ? " on" : "") + (m.fav ? " fav" : ""));
+  b.dataset.key = m.key;
   b.title = `${m.home.name} – ${m.away.name} · ${m.league_name}`;
   b.style.setProperty("--hc", m.home.color);
   b.style.setProperty("--ac", m.away.color);
@@ -149,7 +153,7 @@ function tile(m: SportMatch, on: boolean) {
     p.style.setProperty("--p", String(progress(m)));
     b.append(p);
   }
-  b.addEventListener("click", () => { focusKey = m.key; renderLive(); });
+  b.onclick = () => { focusKey = m.key; renderLive(); };
   return b;
 }
 
@@ -161,10 +165,12 @@ function renderStrip(f: SportMatch | undefined) {
   for (const m of ms) groups.set(m.league_name, [...(groups.get(m.league_name) ?? []), m]);
   const out: HTMLElement[] = [];
   for (const [name, list] of groups) {
-    out.push(el("div", "strip-league n-eyebrow", name));
+    const lg = el("div", "strip-league n-eyebrow", name);
+    lg.dataset.key = `lg:${name}`;
+    out.push(lg);
     out.push(...list.map((m) => tile(m, m.key === f?.key)));
   }
-  strip.replaceChildren(...out);
+  morph(strip, out);
   const solo = ms.length < 2;
   strip.hidden = solo;
   q(".view[data-view=live]").classList.toggle("solo", solo);
@@ -183,8 +189,9 @@ function renderLive() {
   const sig = JSON.stringify([f.key, f.home.score, f.away.score, f.clock, f.state, f.events.map((e) => e.id)]);
   if (sig !== focusSig) {
     focusSig = sig;
-    detailSig = "";
-    box.replaceChildren(focusEl(f));
+    // anderes Spiel: frische Analyse-Plaetze; gleiches Spiel: nur Geaendertes (Stand, Minute, neue Tickerzeilen)
+    if (box.querySelector<HTMLElement>(".big")?.dataset.key !== f.key) detailSig = "";
+    morph(box, [focusEl(f)]);
   }
   renderDetail(f);
 }
@@ -193,6 +200,7 @@ const openIcon = svgIcon('<path d="M9 6h9v9"/><path d="M18 6 6 18"/>');
 
 function focusEl(f: SportMatch) {
   const wrap = el("article", `big ${f.state}`);
+  wrap.dataset.key = f.key;
   wrap.style.setProperty("--hc", f.home.color);
   wrap.style.setProperty("--ac", f.away.color);
   const head = el("div", "big-head");
@@ -202,7 +210,7 @@ function focusEl(f: SportMatch) {
     open.innerHTML = openIcon;
     open.title = "Spielseite im Browser öffnen";
     open.setAttribute("aria-label", open.title);
-    open.addEventListener("click", () => void invoke("open_link", { url: f.link }).catch(() => {}));
+    open.onclick = () => void invoke("open_link", { url: f.link }).catch(() => {});
     head.append(open);
   }
   const score = el("div", "big-score");
@@ -224,13 +232,21 @@ function focusEl(f: SportMatch) {
     pw.append(pitch.el);
     main.append(pw);
   }
-  main.append(el("div", "slot slot-main"));
-  if (f.state !== "pre") {
+  if (f.court && f.source === "espn" && f.state !== "pre") {
+    court.setMatch(f);
+    const cw = card("Wurfbild", "Treffer ● · Fehlwürfe ×", "court-card");
+    cw.append(court.el);
+    main.append(cw);
+  }
+  const slot = (cls: string) => { const e = el("div", `slot ${cls}`); e.dataset.key = cls; e.dataset.keep = ""; return e; };
+  main.append(slot("slot-main"));
+  // Basketball hat keinen Ticker (die Wuerfe stehen im Wurfbild)
+  if (f.state !== "pre" && !(f.court && !f.events.length)) {
     const tk = card("Ticker", f.events.length ? `${f.events.length} Meldungen` : "", "ticker-card");
     tk.append(tickerEl(f, 24));
     aside.append(tk);
   }
-  aside.append(el("div", "slot slot-side"));
+  aside.append(slot("slot-side"));
   body.append(main, aside);
   wrap.append(head, score, body);
   return wrap;
@@ -243,7 +259,7 @@ function renderDetail(f: SportMatch) {
   const main = q(".slot-main"), side = q(".slot-side");
   if (!main || !side) return;
   if (f.key.startsWith("oldb/")) {
-    if (detailSig !== "oldb") { detailSig = "oldb"; main.replaceChildren(); side.replaceChildren(); }
+    if (detailSig !== "oldb") { detailSig = "oldb"; morph(main, []); morph(side, []); }
     return;
   }
   const c = details.get(f.key);
@@ -261,13 +277,13 @@ function renderDetail(f: SportMatch) {
   if (sig === detailSig) return;
   detailSig = sig;
   if (!cur?.d) {
-    main.replaceChildren(...(cur?.err ? [] : [faint("Analyse wird geladen …", "faint slot-wait")]));
-    side.replaceChildren();
+    morph(main, cur?.err ? [] : [faint("Analyse wird geladen …", "faint slot-wait")]);
+    morph(side, []);
     return;
   }
   const { main: a, side: b } = detailCards(f, cur.d);
-  main.replaceChildren(...a);
-  side.replaceChildren(...b);
+  morph(main, a);
+  morph(side, b);
 }
 
 /** Kein Spiel heute: das naechste (deine Teams zuerst) mit Countdown */
@@ -280,10 +296,10 @@ function renderEmpty(box: HTMLElement) {
     c.title = `${next.home.name} – ${next.away.name}`;
     c.append(el("span", "n-eyebrow", `Als Nächstes · ${next.league_name}`), bugEl(next, "–", "next-bug"),
       el("span", "next-when", `${shortDay(next.start)} · ${timeOf(next.start)} · ${countdown(next.start)}`));
-    c.addEventListener("click", () => setView("plan"));
+    c.onclick = () => setView("plan");
     e.append(c);
   } else if (!plan) void loadPlan(false, true);
-  box.replaceChildren(e);
+  morph(box, [e]);
 }
 
 // Ballverlauf: nur holen, solange das Spielfeld zu sehen ist
@@ -291,14 +307,15 @@ let watching = "";
 let watchAt = 0;
 function tickWatch() {
   const f = focusMatch();
-  const visible = view === "live" && !document.hidden && !!f && pitch.el.isConnected && f.pitch && f.source === "espn" && f.state !== "pre";
+  const visible = view === "live" && !document.hidden && !!f && f.source === "espn" && f.state !== "pre" &&
+    ((pitch.el.isConnected && f.pitch) || (court.el.isConnected && !!f.court));
   const key = visible ? f!.key : "";
   if (key !== watching || (key && Date.now() - watchAt > 8000)) {
     watching = key;
     watchAt = Date.now();
     invoke("sport_watch", { key: key || null }).catch(() => {});
   }
-  pitch.run(!!key);
+  pitch.run(!!key && pitch.el.isConnected);
 }
 
 // ---------- Spielplan ----------
@@ -334,6 +351,7 @@ async function loadPlan(force = false, quiet = false) {
 function prow(m: SportMatch, opts: { league?: boolean; when?: string } = {}) {
   const lv = live.matches.find((x) => x.key === m.key) ?? m;
   const r = el("button", `prow ${lv.state}` + (lv.fav ? " fav" : "") + (opts.league ? " with-league" : ""));
+  r.dataset.key = lv.key;
   r.title = `${lv.home.name} – ${lv.away.name} · ${lv.league_name}`;
   const when = el("span", "p-when");
   if (opts.when) when.textContent = opts.when;
@@ -344,10 +362,10 @@ function prow(m: SportMatch, opts: { league?: boolean; when?: string } = {}) {
   mid.append(crestEl(lv.home), el("b", "", lv.state === "pre" ? "–" : scoreOf(lv)), crestEl(lv.away));
   r.append(when, mid);
   if (opts.league) r.append(el("span", "p-league", lv.league_name));
-  r.addEventListener("click", () => {
+  r.onclick = () => {
     if (live.matches.some((x) => x.key === lv.key)) { focusKey = lv.key; setView("live"); }
     else if (lv.link) void invoke("open_link", { url: lv.link }).catch(() => {});
-  });
+  };
   return r;
 }
 
@@ -356,23 +374,23 @@ function renderPlan() {
   const sports = [...new Set(ids.map(sportOf))];
   const sportChips = q(".plan-sports");
   sportChips.hidden = sports.length < 2;
-  sportChips.replaceChildren(...sports.map((s) => chip(SPORT_NAME[s] ?? s, !sportOff.has(s), () => {
+  morph(sportChips, sports.map((s) => chip(SPORT_NAME[s] ?? s, !sportOff.has(s), () => {
     if (sportOff.has(s)) sportOff.delete(s); else sportOff.add(s);
     renderPlan();
   })));
-  q(".plan-leagues").replaceChildren(...ids.filter((id) => !sportOff.has(sportOf(id))).map((id) => chip(leagueName(id), !planOff.has(id), () => {
+  morph(q(".plan-leagues"), ids.filter((id) => !sportOff.has(sportOf(id))).map((id) => chip(leagueName(id), !planOff.has(id), () => {
     if (planOff.has(id)) planOff.delete(id); else planOff.add(id);
     renderPlan();
   })));
   document.querySelectorAll<HTMLButtonElement>(".plan-scope button").forEach((b) => b.classList.toggle("active", b.dataset.scope === planScope));
   const box = q(".plan");
   if (!plan) {
-    box.replaceChildren(faint(planLoading ? "Spielplan wird geladen …" : planErr || "Noch nichts geladen"));
+    morph(box, [faint(planLoading ? "Spielplan wird geladen …" : planErr || "Noch nichts geladen")]);
     return;
   }
   const list = plan.filter((m) => !planOff.has(m.league) && !sportOff.has(m.sport) && (planScope === "all" || m.fav));
   if (!list.length) {
-    box.replaceChildren(faint(planScope === "fav" ? "Keine Spiele deiner Teams in diesen drei Wochen." : "Keine Spiele in diesem Zeitraum."));
+    morph(box, [faint(planScope === "fav" ? "Keine Spiele deiner Teams in diesen drei Wochen." : "Keine Spiele in diesem Zeitraum.")]);
     return;
   }
   // Tag -> Wettbewerb -> Spiele; die Wettbewerbe eines Tages stehen nebeneinander
@@ -390,6 +408,7 @@ function renderPlan() {
   for (const day of days.values()) {
     const first = [...day.values()][0][0];
     const sec = el("section", "day");
+    sec.dataset.key = new Date(first.start).toDateString();
     sec.append(el("h3", "day-head n-liquid", dayLabel(first.start)));
     const grid = el("div", "day-grid");
     for (const [id, ms] of [...day.entries()].sort((a, b) => order(a[0]) - order(b[0]))) {
@@ -401,7 +420,7 @@ function renderPlan() {
     out.push(sec);
     if (!today && first.start >= start) today = sec;
   }
-  box.replaceChildren(...out);
+  morph(box, out);
   if (!planScrolled && today) {
     planScrolled = true;
     requestAnimationFrame(() => { q("main").scrollTop = Math.max(0, today!.offsetTop - 120); });
@@ -438,18 +457,18 @@ function renderLeagues() {
   if (!sports.includes(leagueSport)) leagueSport = sports[0] ?? "";
   const seg = q(".league-sports");
   seg.hidden = sports.length < 2;
-  seg.replaceChildren(...sports.map((s) => {
+  morph(seg, sports.map((s) => {
     const b = el("button", s === leagueSport ? "active" : "", SPORT_NAME[s] ?? s);
-    b.addEventListener("click", () => { leagueSport = s; leagueId = ""; renderLeagues(); });
+    b.onclick = () => { leagueSport = s; leagueId = ""; renderLeagues(); };
     return b;
   }));
   const mine = ids.filter((id) => sportOf(id) === leagueSport);
   if (!mine.includes(leagueId)) leagueId = mine.find((id) => !NO_TABLE.has(id)) ?? mine[0] ?? "";
-  q(".league-chips").replaceChildren(...mine.map((id) => chip(leagueName(id), id === leagueId, () => { leagueId = id; renderLeagues(); })));
+  morph(q(".league-chips"), mine.map((id) => chip(leagueName(id), id === leagueId, () => { leagueId = id; renderLeagues(); })));
   const grid = q(".league-grid");
   if (!leagueId) {
     grid.hidden = true;
-    q(".league-chips").replaceChildren(faint("Wähle Wettbewerbe in den Einstellungen.", "faint"));
+    morph(q(".league-chips"), [faint("Wähle Wettbewerbe in den Einstellungen.", "faint")]);
     return;
   }
   grid.hidden = false;
@@ -464,12 +483,12 @@ function renderTable() {
   if (NO_TABLE.has(id)) {
     const c = card("Tabelle");
     c.append(faint("K.-o.-Wettbewerb – hier gibt es keine Tabelle.", "faint c-empty"));
-    box.replaceChildren(c);
+    morph(box, [c]);
     return;
   }
   const c = tables.get(id);
   if (!c || Date.now() - c.at > 10 * 60_000) {
-    if (!c) { const w = card("Tabelle"); w.append(faint("Tabelle wird geladen …", "faint c-empty")); box.replaceChildren(w); }
+    if (!c) { const w = card("Tabelle"); w.append(faint("Tabelle wird geladen …", "faint c-empty")); morph(box, [w]); }
     tables.set(id, { ...(c ?? {}), at: Date.now() });
     invoke<Group[]>("standings", { league: id })
       .then((g) => tables.set(id, { at: Date.now(), groups: g }))
@@ -477,7 +496,7 @@ function renderTable() {
       .finally(() => { if (view === "leagues" && leagueId === id) renderTable(); });
     if (!c) return;
   }
-  if (c?.err) { const w = card("Tabelle"); w.append(faint(c.err, "faint c-empty")); box.replaceChildren(w); return; }
+  if (c?.err) { const w = card("Tabelle"); w.append(faint(c.err, "faint c-empty")); morph(box, [w]); return; }
   if (!c?.groups) return;
   const sport = sportOf(id);
   const us = sport !== "soccer";
@@ -491,6 +510,7 @@ function renderTable() {
     t.append(head);
     for (const r of g.rows) {
       const row = el("button", "trow" + (us ? " us" : "") + (r.fav || isFavTeam(r.team) ? " fav" : ""));
+      row.dataset.key = r.team.id || r.team.name;
       row.title = r.note ? `${r.team.name} · ${r.note}` : r.team.name;
       if (r.color) { row.style.setProperty("--z", r.color); row.classList.add("zone"); notes.set(r.note, r.color); }
       const team = el("span", "t-team");
@@ -499,13 +519,14 @@ function renderTable() {
         ? [String(r.rank), team, r.won, r.lost, r.pct, sport === "hockey" ? r.points : r.behind]
         : [String(r.rank), team, r.played, r.won, r.draw, r.lost, r.goals, r.diff, r.points];
       row.append(...cells.map((x, i) => (typeof x === "string" ? el("span", i === cells.length - 1 ? "t-pts" : "", x) : x)));
-      row.addEventListener("click", () => openTeam({ key: r.team.id, name: r.team.name, logo: r.team.logo }));
+      row.onclick = () => openTeam({ key: r.team.id, name: r.team.name, logo: r.team.logo });
       t.append(row);
     }
     out.push(t);
   }
   if (notes.size) {
     const legend = el("div", "legend");
+    legend.dataset.key = "legend";
     for (const [n, color] of notes) {
       const i = el("span", "", n);
       i.style.setProperty("--z", color);
@@ -513,7 +534,7 @@ function renderTable() {
     }
     out.push(legend);
   }
-  box.replaceChildren(...out);
+  morph(box, out);
 }
 
 /** Spielplan des gewaehlten Wettbewerbs, eigene Bildlaufflaeche, „Heute“ steht oben */
@@ -537,6 +558,7 @@ function renderLeaguePlan() {
       if (d !== day) {
         day = d;
         const h = el("div", "lg-day", dayLabel(m.start));
+        h.dataset.key = d;
         list.append(h);
         if (!today && m.start >= start) today = h;
       }
@@ -552,7 +574,7 @@ function renderLeaguePlan() {
     }));
   }
   c.append(list);
-  box.replaceChildren(c);
+  morph(box, [c]);
 }
 let lgPlanFor = "";
 
@@ -562,7 +584,7 @@ function renderNews() {
   if (leagueInfo(id)?.source === "OpenLigaDB") {
     const c = card("Schlagzeilen");
     c.append(faint("Für diesen Wettbewerb gibt es keine Schlagzeilen (OpenLigaDB).", "faint c-empty"));
-    box.replaceChildren(c);
+    morph(box, [c]);
     return;
   }
   const n = news.get(id);
@@ -595,7 +617,7 @@ function renderNews() {
       const seg = el("div", "n-seg news-seg");
       for (const [k, label] of filters) {
         const b = el("button", k === newsFilter ? "active" : "", label);
-        b.addEventListener("click", () => { newsFilter = k; renderNews(); });
+        b.onclick = () => { newsFilter = k; renderNews(); };
         seg.append(b);
       }
       c.append(seg);
@@ -605,6 +627,7 @@ function renderNews() {
     if (!list.length) c.append(faint("Gerade keine Meldungen.", "faint c-empty"));
     for (const { a, k } of list.slice(0, 18)) {
       const r = el("button", "article" + (isTransferKind(k.kind) ? " transfer" : "") + (k.kind ? ` k-${k.kind}` : ""));
+      r.dataset.key = a.headline;
       r.title = a.text || a.headline;
       if (a.image) {
         const img = new Image();
@@ -625,7 +648,7 @@ function renderNews() {
       if (a.at) sub.append(el("span", "", ago(a.at)));
       t.append(el("b", "", a.headline), sub);
       r.append(t);
-      if (a.link) r.addEventListener("click", () => void invoke("open_link", { url: a.link }).catch(() => {}));
+      if (a.link) r.onclick = () => void invoke("open_link", { url: a.link }).catch(() => {});
       c.append(r);
     }
   }
@@ -634,12 +657,13 @@ function renderNews() {
     const m = card("Kaderbewegungen", `${cur.v.moves.length} zuletzt`, "moves-card");
     for (const x of cur.v.moves.slice(0, 20)) {
       const r = el("div", "move");
+      r.dataset.key = `${x.at}:${x.text}`;
       r.append(crestEl(x.team), el("span", "mv-text", x.text), el("small", "mv-at", new Date(x.at).toLocaleDateString("de-DE", { day: "numeric", month: "short" })));
       m.append(r);
     }
     parts.push(m);
   }
-  box.replaceChildren(...parts);
+  morph(box, parts);
 }
 
 // ---------- Teams ----------
@@ -695,6 +719,7 @@ async function renderTeams() {
   const teams = snap.sport.teams;
   const cards: HTMLElement[] = teams.map((t) => {
     const c = el("article", "team n-card");
+    c.dataset.key = t.key;
     const head = el("div", "team-head");
     head.append(crestOf(t, "crest team-crest"), el("h3", "", t.name));
     c.append(head);
@@ -702,13 +727,14 @@ async function renderTeams() {
     if (v?.v) {
       c.append(el("span", "n-eyebrow", "Als Nächstes"), nextEl(t, v.v.next[0]), el("span", "n-eyebrow", "Form"), formEl(t, v.v.last));
     } else c.append(el("p", "faint", v?.err ?? "Wird geladen …"));
-    c.addEventListener("click", () => openTeam(t));
+    c.onclick = () => openTeam(t);
     return c;
   });
   const add = el("button", "team add");
+  add.dataset.key = "add";
   add.append(el("span", "plus", "+"), el("span", "", teams.length ? "Team hinzufügen" : "Wähle deine Teams"));
-  add.addEventListener("click", () => openSettings());
-  grid.replaceChildren(...cards, add);
+  add.onclick = () => openSettings();
+  morph(grid, [...cards, add]);
   const missing = teams.filter((t) => !teamViews.get(t.key)?.v && !teamViews.get(t.key)?.err);
   if (missing.length) {
     await Promise.all(missing.map((t) => loadTeam(t.key)));
@@ -880,6 +906,7 @@ function squadEl(t: FavTeam): HTMLElement[] {
     out.push(el("div", "n-eyebrow", `${g} · ${ps.length}`));
     for (const p of ps.sort((a, b) => (Number(a.jersey) || 99) - (Number(b.jersey) || 99))) {
       const r = el("div", "player" + (p.injury ? " hurt" : ""));
+      r.dataset.key = `${p.jersey}:${p.name}`;
       r.append(el("span", "pl-no", p.jersey || "–"), el("span", "pl-name", p.name));
       const meta = el("span", "pl-meta");
       if (p.flag) {
@@ -923,14 +950,14 @@ function renderSheetTeam() {
     const seg = el("div", "n-seg sheet-tabs");
     for (const [k, label] of [["games", "Spiele"], ["squad", "Kader"]] as const) {
       const b = el("button", k === sheetTab ? "active" : "", label);
-      b.addEventListener("click", () => { sheetTab = k; renderSheetTeam(); });
+      b.onclick = () => { sheetTab = k; renderSheetTeam(); };
       seg.append(b);
     }
     bar.append(seg);
   } else sheetTab = "games";
   if (sheetTab === "squad") {
     parts.push(...squadEl(t));
-    body.replaceChildren(...parts);
+    morph(body, parts);
     return;
   }
   const v = teamViews.get(t.key);
@@ -948,7 +975,7 @@ function renderSheetTeam() {
     });
     parts.push(el("div", "n-eyebrow", "Form"), formEl(t, v.v.last));
   }
-  body.replaceChildren(...parts);
+  morph(body, parts);
 }
 
 // ---------- Einstellungen / Abgleich ----------
@@ -1052,6 +1079,10 @@ async function main() {
     if (view === "leagues" && plan) renderLeaguePlan();
   });
   await listen<{ key: string; reset: boolean; plays: SportPlay[] }>("sport-plays", (e) => {
+    if (e.payload.key === court.matchKey && court.el.isConnected) {
+      if (e.payload.reset) court.reset(e.payload.plays); else court.add(e.payload.plays);
+      return;
+    }
     if (e.payload.key !== pitch.matchKey) return;
     if (e.payload.reset) pitch.reset(e.payload.plays); else pitch.add(e.payload.plays);
   });

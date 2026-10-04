@@ -37,6 +37,8 @@ function sv<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, 
 /** Karte mit Kopfzeile (Augenbraue links, Hinweis rechts) — der eine Kartenaufbau in ganz Arena */
 export function card(title: string, meta = "", cls = "") {
   const c = el("section", `card n-card ${cls}`.trim());
+  // Schluessel fuer morph(): dieselbe Karte bleibt dieselbe, nur ihr Inhalt aendert sich
+  c.dataset.key = `card:${title}`;
   const h = el("header", "c-head");
   h.append(el("span", "n-eyebrow", title));
   if (meta) h.append(el("span", "c-meta", meta));
