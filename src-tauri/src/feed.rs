@@ -331,7 +331,12 @@ pub(crate) fn team_of(c: &Value, sport: &str) -> Team {
         short: { let x = s(&t["shortDisplayName"]); if x.is_empty() { display.clone() } else { x } },
         abbr: s(&t["abbreviation"]),
         logo: s(&t["logo"]),
-        color: String::new(),
+        // Vereinsfarbe von ESPN, auf dunklem Grund sichtbar (Spiele waehlen sie in parse_espn neu, damit Heim und
+        // Gast verschieden sind)
+        color: {
+            let (a, b) = (hex(&s(&t["color"])), hex(&s(&t["alternateColor"])));
+            if luma(&a) > 45.0 { a } else if luma(&b) > 45.0 { b } else { a }
+        },
         score: s(&c["score"]),
     };
     if sport == "soccer" {
@@ -1091,6 +1096,7 @@ pub struct TeamInfo {
     key: String,
     name: String,
     logo: String,
+    color: String,
 }
 
 /// Mannschaften eines Wettbewerbs (fuer die Auswahl der Lieblingsteams)
@@ -1108,10 +1114,10 @@ pub async fn sport_teams(league: String) -> Result<Vec<TeamInfo>, String> {
                 let c = serde_json::json!({ "team": t["team"], "score": "" });
                 let team = team_of(&c, l.sport);
                 let logo = t["team"]["logos"][0]["href"].as_str().unwrap_or("").to_string();
-                out.push(TeamInfo { key: team.id, name: team.name, logo });
+                out.push(TeamInfo { key: team.id, name: team.name, logo, color: team.color });
             }
             if l.id == "dfbteam" && !out.iter().any(|t| t.name == "Deutschland") {
-                out.push(TeamInfo { key: "soccer:481".into(), name: "Deutschland".into(), logo: String::new() });
+                out.push(TeamInfo { key: "soccer:481".into(), name: "Deutschland".into(), logo: String::new(), color: String::new() });
             }
         } else if let Some(sc) = l.oldb {
             let now = crate::now_ms();
@@ -1121,7 +1127,7 @@ pub async fn sport_teams(league: String) -> Result<Vec<TeamInfo>, String> {
             let season = if month >= 7 { year } else { year - 1 };
             let v = get_json(&agent, &format!("{OLDB}/getavailableteams/{sc}/{season}"))?;
             for t in v.as_array().into_iter().flatten() {
-                out.push(TeamInfo { key: format!("oldb:{}", s(&t["teamId"])), name: s(&t["teamName"]), logo: s(&t["teamIconUrl"]) });
+                out.push(TeamInfo { key: format!("oldb:{}", s(&t["teamId"])), name: s(&t["teamName"]), logo: s(&t["teamIconUrl"]), color: String::new() });
             }
         }
         out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));

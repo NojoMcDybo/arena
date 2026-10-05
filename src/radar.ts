@@ -80,3 +80,46 @@ export function radarEl(axes: string[], series: RadarSeries[], cls = "") {
 
 /** v auf 0..1 zwischen lo und hi (umgekehrt, wenn lo > hi: weniger ist besser) */
 export const scale = (v: number, lo: number, hi: number) => Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+
+/**
+ * Radar mit Uebergang: neue Werte (oder ein zweiter Spieler zum Vergleich) wachsen in 0,6 s aus den alten
+ * heraus, statt zu springen. Gleiche Achsen vorausgesetzt; wechseln die Achsen, beginnt es neu.
+ */
+export class RadarAnim {
+  readonly el: HTMLElement;
+  private axes: string[] = [];
+  private cur: RadarSeries[] = [];
+  private raf = 0;
+
+  constructor(private cls = "") {
+    this.el = document.createElement("div");
+    this.el.className = "radar-anim";
+    this.el.dataset.keep = "";
+  }
+
+  set(axes: string[], series: RadarSeries[]) {
+    const same = axes.join("|") === this.axes.join("|");
+    const from = same ? this.cur : [];
+    this.axes = axes;
+    cancelAnimationFrame(this.raf);
+    const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const draw = (k: number) => {
+      const e = 1 - (1 - k) ** 3;
+      const mix = series.map((s, si) => {
+        const f = from[si]?.values ?? s.values.map(() => 0);
+        return { ...s, values: s.values.map((v, i) => (v == null ? null : (f[i] ?? 0) + (v - (f[i] ?? 0)) * e)) };
+      });
+      this.el.replaceChildren(radarEl(axes, mix, this.cls));
+    };
+    this.cur = series;
+    if (still) return draw(1);
+    const t0 = performance.now();
+    const tick = (t: number) => {
+      const k = Math.min(1, (t - t0) / 600);
+      draw(k);
+      if (k < 1) this.raf = requestAnimationFrame(tick);
+    };
+    draw(0);
+    this.raf = requestAnimationFrame(tick);
+  }
+}

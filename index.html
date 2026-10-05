@@ -22,7 +22,6 @@
       <div class="top-right" data-tauri-drag-region>
         <button class="n-ico sm n-glass n-liquid find-btn" title="Suchen (Strg+K)" aria-label="Suchen"></button>
         <span class="sync n-glass n-liquid" role="status"><i class="dot"></i><span class="sync-t">Notch</span></span>
-        <button class="n-ico sm n-glass n-liquid full-btn" title="Vollbild (F11)" aria-label="Vollbild"></button>
         <button class="n-ico sm n-glass n-liquid gear" title="Einstellungen" aria-label="Einstellungen"></button>
       </div>
     </header>
@@ -62,8 +61,15 @@
       </section>
 
       <!-- Teams: naechstes Spiel und Form deiner Teams -->
+      <!-- Teams: links die Auswahl (deine Teams, alle Teams der Wettbewerbe, Suche), rechts Team- bzw. Spielerkarte -->
       <section class="view" data-view="teams" hidden>
-        <div class="team-grid"></div>
+        <div class="teams-layout">
+          <aside class="teams-side n-card">
+            <input class="team-search" type="search" placeholder="Team suchen" aria-label="Team suchen" />
+            <div class="ts-list"></div>
+          </aside>
+          <div class="teams-main"></div>
+        </div>
       </section>
     </main>
 

@@ -116,6 +116,18 @@ pub struct MatchDetail {
     form_home: Vec<FormGame>,
     form_away: Vec<FormGame>,
     h2h: Vec<H2h>,
+    /// offizielle Videos von ESPN zum Spiel (Tore, Zusammenfassung, Stimmen), neueste zuerst
+    clips: Vec<Clip>,
+}
+
+#[derive(Serialize, Default, Clone)]
+pub struct Clip {
+    headline: String,
+    url: String,
+    thumb: String,
+    /// Sekunden
+    duration: u64,
+    at: u64,
 }
 
 /// Fussball-Statistik auf Deutsch, in dieser Reihenfolge; Prozentwerte rechnet Arena selbst
@@ -322,6 +334,21 @@ pub async fn match_detail(key: String, state: String) -> Result<MatchDetail, Str
                 d.odds_by = s(&p["provider"]["name"]);
             }
         }
+        // nur ESPN-eigene Seiten (espn.com/video/…), keine fremden Quellen
+        for c in v["videos"].as_array().into_iter().flatten() {
+            let url = s(&c["links"]["web"]["href"]);
+            if !url.starts_with("https://www.espn.com/") && !url.starts_with("https://www.espn.co.uk/") {
+                continue;
+            }
+            d.clips.push(Clip {
+                headline: s(&c["headline"]),
+                url,
+                thumb: s(&c["thumbnail"]),
+                duration: c["duration"].as_u64().unwrap_or(0),
+                at: feed::parse_utc(&s(&c["originalPublishDate"])).or_else(|| feed::parse_utc(&s(&c["lastModified"]))).unwrap_or(0),
+            });
+        }
+        d.clips.sort_by_key(|c| std::cmp::Reverse(c.at));
         for e in v["seasonseries"][0]["events"].as_array().into_iter().flatten().take(5) {
             let cs = e["competitors"].as_array().cloned().unwrap_or_default();
             let pick = |w: &str| cs.iter().find(|c| c["homeAway"] == w).map(|c| feed::team_of(&json!({ "team": c["team"], "score": c["score"] }), sport));
@@ -339,6 +366,8 @@ pub async fn match_detail(key: String, state: String) -> Result<MatchDetail, Str
 
 #[derive(Serialize)]
 pub struct RosterPlayer {
+    /// ESPN-Spieler (Spielerkarte)
+    id: String,
     jersey: String,
     name: String,
     /// G | D | M | F (Fussball) bzw. ESPNs Kuerzel
@@ -353,6 +382,7 @@ pub struct RosterPlayer {
 fn roster_player(a: &Value) -> RosterPlayer {
     let inj = a["injuries"].as_array().and_then(|x| x.first());
     RosterPlayer {
+        id: s(&a["id"]),
         jersey: s(&a["jersey"]),
         name: s(&a["displayName"]),
         pos: s(&a["position"]["abbreviation"]),

@@ -33,6 +33,8 @@ export class LineupHistory {
   private idx = 0;
   private m: SportMatch | null = null;
   private data = new Map<string, Load>();
+  /** nur ein Team (Teamseite): keine Wahl Heim/Gast */
+  private single = false;
 
   constructor(private load: (team: string) => Promise<LineupGame[]>, pick: (p: Player, team: SportTeam) => void) {
     this.el = el("div", "lh");
@@ -49,6 +51,13 @@ export class LineupHistory {
     });
   }
 
+  /** ein Team (Teamseite) */
+  setTeam(t: SportTeam) {
+    this.single = true;
+    const m = { key: `team:${t.id}`, league: "", league_name: "", sport: "soccer", home: t, away: t, state: "post", clock: "", start: 0, fav: false, link: "", events: [], source: "espn" } as unknown as SportMatch;
+    this.setMatch(m);
+  }
+
   /** prefer: welches Team zuerst (Lieblingsteam) */
   setMatch(m: SportMatch, prefer: "home" | "away" = "home") {
     this.m = m;
@@ -58,7 +67,7 @@ export class LineupHistory {
       this.idx = 0;
     }
     this.fetch(m.home.id);
-    this.fetch(m.away.id);
+    if (m.away.id !== m.home.id) this.fetch(m.away.id);
     this.draw();
   }
 
@@ -86,6 +95,7 @@ export class LineupHistory {
   private draw() {
     if (!this.m) return;
     const t = this.team();
+    this.el.style.setProperty("--tc", t.color || "var(--n-accent)");
     // Teamwahl
     const pickBtn = (s: "home" | "away", tm: SportTeam) => {
       const b = el("button", "lh-team" + (s === this.side ? " on" : ""));
@@ -94,7 +104,8 @@ export class LineupHistory {
       b.onclick = () => { if (this.side !== s) { this.side = s; this.idx = 0; this.draw(); } };
       return b;
     };
-    this.head.replaceChildren(pickBtn("home", this.m.home), pickBtn("away", this.m.away));
+    this.head.replaceChildren(...(this.single ? [] : [pickBtn("home", this.m.home), pickBtn("away", this.m.away)]));
+    this.head.hidden = this.single;
     const d = this.data.get(t.id);
     const games = d?.games ?? [];
     if (!games.length) {

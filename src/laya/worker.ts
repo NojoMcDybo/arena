@@ -6,6 +6,8 @@
  * Nachrichten: { type: "load", base } -> { type: "ready" } | { type: "error", message }
  *              { type: "classify", items: { id, text }[] } -> je Eintrag { type: "result", id, kind, p, probs },
  *              danach { type: "done" }
+ *              { type: "ask", questions, items } -> je Eintrag { type: "answer", id, probs }, danach { type: "done" }
+ *              (eine beliebige Auswahlfrage, z. B. die Spielerrolle in questions.ts ROLE)
  */
 
 import * as ort from "onnxruntime-web/wasm";
@@ -45,6 +47,19 @@ self.onmessage = async (e: MessageEvent) => {
         out.forEach((o, j) => {
           const a = o.answers.kind as ChoiceAnswer;
           post({ type: "result", id: chunk[j].id, kind: a.choice, p: a.probabilities[a.choice] ?? 0, probs: a.probabilities });
+        });
+      }
+      post({ type: "done" });
+    } else if (m.type === "ask") {
+      if (!agent) throw new Error("Modell nicht geladen");
+      const items: { id: string; text: string }[] = m.items;
+      const key = Object.keys(m.questions)[0];
+      for (let i = 0; i < items.length; i += 4) {
+        const chunk = items.slice(i, i + 4);
+        const out = await agent.predictBatch(chunk.map((x) => x.text), m.questions, { batchSize: 4 });
+        out.forEach((o, j) => {
+          const a = o.answers[key] as ChoiceAnswer;
+          post({ type: "answer", id: chunk[j].id, probs: a.probabilities });
         });
       }
       post({ type: "done" });

@@ -12,6 +12,7 @@
  */
 
 import type { CardId } from "./layout";
+import { CLIP_DE, clipKind, duration, type Clip } from "./clips";
 import { crestEl, type SportMatch, type SportTeam } from "./sport-ui";
 import { radarEl, scale, type RadarSeries } from "./radar";
 import { stadiumBody, type Venue } from "./stadium";
@@ -25,7 +26,7 @@ export type H2h = { date: number; home: SportTeam; away: SportTeam };
 export type MatchDetail = {
   stats: Stat[]; pulse: Pulse[]; lineup_home: Lineup | null; lineup_away: Lineup | null;
   venue: string; city: string; referee: string; attendance: number;
-  odds: number[]; odds_by: string; form_home: FormGame[]; form_away: FormGame[]; h2h: H2h[];
+  odds: number[]; odds_by: string; form_home: FormGame[]; form_away: FormGame[]; h2h: H2h[]; clips?: Clip[];
 };
 
 /** von main.ts gesetzt: Link oeffnen (Browser), Spielerprofil oeffnen */
@@ -267,6 +268,7 @@ export function oddsCard(m: SportMatch, d: MatchDetail | null) {
 function formRow(team: SportTeam, games: FormGame[]) {
   const r = el("div", "fr");
   r.dataset.key = team.id;
+  r.style.setProperty("--tc", team.color);
   r.append(crestEl(team, "crest"));
   const dots = el("div", "form");
   // aeltestes links; ohne Daten fuenf leere Punkte
@@ -315,6 +317,35 @@ export function stadiumCard(m: SportMatch, d: MatchDetail | null, venue: Venue |
   return c;
 }
 
+/** Clips (offizielle ESPN-Videos): Tor, Zusammenfassung, Stimmen — antippen oeffnet sie im Browser */
+export function clipsCard(m: SportMatch, d: MatchDetail | null) {
+  const list = d?.clips ?? [];
+  const c = card("Clips", list.length ? `${list.length} · ESPN` : "", "clips-card");
+  if (!list.length) {
+    c.append(empty(m.state === "pre" ? "Clips gibt es ab Anpfiff" : "Noch keine Clips – ESPN stellt Tore und Zusammenfassungen meist kurz nach der Szene bereit"));
+    return c;
+  }
+  const ol = el("ol", "clips");
+  for (const x of list.slice(0, 8)) {
+    const li = el("li");
+    li.dataset.key = x.url;
+    const b = el("button", "clip");
+    const pic = el("span", "clip-pic");
+    if (x.thumb) { const img = new Image(); img.src = x.thumb; img.alt = ""; img.loading = "lazy"; img.onerror = () => img.remove(); pic.append(img); }
+    if (x.duration) pic.append(el("small", "clip-dur", duration(x.duration)));
+    const k = clipKind(x.headline);
+    const txt = el("span", "clip-txt");
+    txt.append(el("span", `clip-kind k-${k}`, CLIP_DE[k]), el("b", "", x.headline));
+    b.append(pic, txt);
+    b.title = "Clip bei ESPN öffnen";
+    b.onclick = () => hooks.open(x.url);
+    li.append(b);
+    ol.append(li);
+  }
+  c.append(ol);
+  return c;
+}
+
 /** Alle Karten zum Spiel, aufgeteilt auf die beiden Spalten der Live-Ansicht — immer vollstaendig */
 /** alle Analyse-Karten mit festem Schluessel (layout.ts ordnet sie an; was eine Phase nicht braucht, ist dort
  * ausgeblendet und laesst sich zurueckholen) */
@@ -327,6 +358,7 @@ export function detailCards(m: SportMatch, d: MatchDetail | null, venue: Venue |
     ["radar", teamRadarCard(m, d)],
     ["lineup", lineupCard(m, d)],
     ["stadium", stadiumCard(m, d, venue, venueLoading)],
+    ["clips", clipsCard(m, d)],
   ]);
   if (m.sport === "soccer") out.set("pulse", pulseCard(m, d));
   return out;

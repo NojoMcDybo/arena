@@ -6,7 +6,7 @@
 //   (Einschaetzung vor dem Spiel), Aufstellung + letzte Aufstellungen.
 // Wer umstellt, aendert nur die Anordnung dieser Sportart in dieser Phase; „Standard“ nimmt sie zurueck.
 
-export type CardId = "field" | "ticker" | "odds" | "form" | "h2h" | "pulse" | "stats" | "radar" | "lineup" | "stadium" | "history";
+export type CardId = "field" | "ticker" | "odds" | "form" | "h2h" | "pulse" | "stats" | "radar" | "lineup" | "stadium" | "history" | "clips";
 export type Phase = "pre" | "in" | "post";
 export type Lanes = { hero: CardId[]; main: CardId[]; side: CardId[]; hidden: CardId[] };
 type Lane = keyof Lanes;
@@ -14,16 +14,16 @@ const LANES: Lane[] = ["hero", "main", "side", "hidden"];
 
 export const CARD_NAME: Record<CardId, string> = {
   field: "Spielfeld", ticker: "Ticker", odds: "Prognose", form: "Form", h2h: "Direkter Vergleich", pulse: "Druckphasen",
-  stats: "Statistik", radar: "Teamvergleich", lineup: "Aufstellung", stadium: "Stadion", history: "Letzte Aufstellungen",
+  stats: "Statistik", radar: "Teamvergleich", lineup: "Aufstellung", stadium: "Stadion", history: "Letzte Aufstellungen", clips: "Clips",
 };
 
 const DEFAULT: Record<Phase, Lanes> = {
   // vor dem Spiel: wer spielt (Aufstellung auf dem Feld), dann die Einschaetzung, dann die Teamstaerke
-  pre: { hero: ["field"], main: ["odds", "form", "h2h", "stats", "radar"], side: ["lineup", "history", "stadium"], hidden: ["ticker", "pulse"] },
+  pre: { hero: ["field"], main: ["odds", "form", "h2h", "stats", "radar"], side: ["lineup", "history", "stadium"], hidden: ["ticker", "pulse", "clips"] },
   // waehrend des Spiels: Feld, Zahlen (Statistik + Radar), Verlauf (Ticker + Druckphasen)
-  in: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "lineup", "stadium"], hidden: ["odds", "form", "h2h", "history"] },
+  in: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "clips", "lineup", "stadium"], hidden: ["odds", "form", "h2h", "history"] },
   // danach: das ganze Spiel auf dem Feld, die Bilanz, der Verlauf
-  post: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "lineup", "history", "stadium"], hidden: ["odds", "form", "h2h"] },
+  post: { hero: ["field"], main: ["stats", "radar", "pulse"], side: ["ticker", "clips", "lineup", "history", "stadium"], hidden: ["odds", "form", "h2h"] },
 };
 
 // v2: volle Breite fuer das Spielfeld (Anordnungen aus v1 gelten nicht mehr)

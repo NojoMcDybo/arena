@@ -168,6 +168,8 @@ pub fn run() {
             more::squad_stats,
             more::player_info,
             more::recent_lineups,
+            more::match_plays,
+            more::league_pool,
             laya::laya_status,
             laya::laya_install,
             laya::laya_uninstall,

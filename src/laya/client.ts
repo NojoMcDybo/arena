@@ -86,6 +86,10 @@ const run = { done: 0, total: 0 };
 
 export const layaWork = () => ({ ...run, busy: running || queue.length > 0, error: lastError });
 
+/** laufende Fragen (askLaya): solange darf der Ruhe-Zeitgeber den Worker nicht beenden */
+let asking = 0;
+const idleStop = () => { if (!asking && !running) stopWorker(); };
+
 function stopWorker() {
   clearTimeout(idleTimer);
   worker?.terminate();
@@ -109,7 +113,19 @@ function ensureWorker(): Promise<void> {
   return loading;
 }
 
+/** Auftraege an den Worker nacheinander (Einordnen und Fragen teilen sich ein Modell) */
+let lock: Promise<unknown> = Promise.resolve();
+function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const next = lock.then(fn, fn);
+  lock = next.catch(() => {});
+  return next;
+}
+
 function runBatch(texts: string[]): Promise<void> {
+  return exclusive(() => runBatchNow(texts));
+}
+
+function runBatchNow(texts: string[]): Promise<void> {
   const w = worker!;
   return new Promise<void>((resolve, reject) => {
     const on = (e: MessageEvent) => {
@@ -154,7 +170,7 @@ async function pump() {
   run.done = run.total = 0;
   notify();
   clearTimeout(idleTimer);
-  idleTimer = window.setTimeout(stopWorker, 90_000);
+  idleTimer = window.setTimeout(idleStop, 90_000);
 }
 
 /** Schlagzeilen einordnen lassen (nur neue; Ergebnisse kommen ueber onLaya) */
@@ -167,6 +183,46 @@ export function classify(texts: string[]) {
   run.total += todo.length;
   clearTimeout(idleTimer);
   void pump();
+}
+
+/**
+ * Eine Auswahlfrage an Laya fuer viele Texte (z. B. Spielerrollen): Wahrscheinlichkeiten je Antwort und Eintrag.
+ * Nur mit installiertem Modell; sonst bleibt die Liste leer. Antworten werden je Text gemerkt (diese Sitzung).
+ */
+const asked = new Map<string, Record<string, number>>();
+export const layaReady = () => status.state === "ready" && !lastError;
+export async function askLaya(questions: Record<string, unknown>, items: { id: string; text: string }[]): Promise<Map<string, Record<string, number>>> {
+  const out = new Map<string, Record<string, number>>();
+  if (!layaReady()) return out;
+  const key = Object.keys(questions).join(",") + ":";
+  const todo = items.filter((x) => { const c = asked.get(key + x.text); if (c) out.set(x.id, c); return !c; });
+  if (!todo.length) return out;
+  clearTimeout(idleTimer);
+  asking++;
+  try {
+    await ensureWorker();
+    await exclusive(() => new Promise<void>((resolve, reject) => {
+      const w = worker!;
+      const on = (e: MessageEvent) => {
+        const m = e.data;
+        if (m.type === "answer") {
+          const it = todo[Number(m.id)];
+          asked.set(key + it.text, m.probs);
+          out.set(it.id, m.probs);
+        } else if (m.type === "done") { w.removeEventListener("message", on); resolve(); }
+        else if (m.type === "error") { w.removeEventListener("message", on); reject(new Error(m.message)); }
+      };
+      w.addEventListener("message", on);
+      w.postMessage({ type: "ask", questions, items: todo.map((x, i) => ({ id: String(i), text: x.text })) });
+    }));
+  } catch (e) {
+    lastError = String((e as Error)?.message ?? e);
+    stopWorker();
+    notify();
+  }
+  asking--;
+  idleTimer = window.setTimeout(idleStop, 90_000);
+  return out;
 }
 
 /** Nach einem Fehler erneut versuchen (Knopf in den Einstellungen) */

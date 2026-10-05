@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::extra::{cached, home_paths, season};
 use crate::feed::{self, s, ESPN, LEAGUES};
@@ -404,13 +404,24 @@ fn player_entity(agent: &ureq::Agent, name: &str, born: &str) -> Option<(String,
 }
 
 #[tauri::command]
-pub async fn player_info(id: String, path: String, name: String) -> Result<PlayerInfo, String> {
+pub async fn player_info(id: String, path: String, name: String, team: Option<String>) -> Result<PlayerInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let ok = |x: &str| !x.is_empty() && x.len() < 40 && x.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+        let agent = feed::agent();
+        // ohne Liga (Spielerkarte aus dem Kader): die Liga des Teams
+        let path = if path.is_empty() || path == "club.friendly" {
+            team.as_deref()
+                .and_then(|t| t.split_once(':'))
+                .filter(|(sp, tid)| *sp == "soccer" && tid.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|(sp, tid)| home_paths(&agent, sp, tid).into_iter().next())
+                .unwrap_or("ger.1")
+                .to_string()
+        } else {
+            path
+        };
         if !ok(&id) || !ok(&path) {
             return Err("unbekannter Spieler".into());
         }
-        let agent = feed::agent();
         let mut p = PlayerInfo { name: name.clone(), ..Default::default() };
         if let Ok(a) = cached(&agent, &format!("{CORE}/soccer/leagues/{path}/athletes/{id}"), Duration::from_secs(DAY)) {
             if !s(&a["displayName"]).is_empty() {
@@ -548,6 +559,40 @@ pub async fn recent_lineups(team: String) -> Result<Vec<LineupGame>, String> {
     .map_err(|e| e.to_string())?
 }
 
+// ---------- Spielverlauf: alle Ballaktionen eines Spiels (zum Nachscrollen) ----------
+
+/// Alle Ballaktionen (Fussball, ESPN Core) mit Ort; `home` = Team-Schluessel der Heimmannschaft (Seiten).
+/// Zwei grosse Seiten reichen fuer ein Spiel (~1.500 Aktionen); laufend 30 s, sonst 6 h zwischengespeichert.
+#[tauri::command]
+pub async fn match_plays(key: String, home: String, live: bool) -> Result<Vec<feed::Play>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let ok = key.len() < 80 && key.chars().all(|c| c.is_ascii_alphanumeric() || "/:._-".contains(c));
+        let (path, id) = key.split_once(':').ok_or("unbekanntes Spiel")?;
+        let lg = path.strip_prefix("soccer/").ok_or("Spielverlauf gibt es für Fußball")?;
+        if !ok || id.is_empty() {
+            return Err("unbekanntes Spiel".into());
+        }
+        let home_id = home.rsplit(':').next().unwrap_or("").to_string();
+        let agent = feed::agent();
+        let ttl = Duration::from_secs(if live { 30 } else { 6 * 3600 });
+        let mut out = Vec::new();
+        for page in 1..=4 {
+            let v = cached(&agent, &format!("{CORE}/soccer/leagues/{lg}/events/{id}/competitions/{id}/plays?limit=1000&page={page}"), ttl)?;
+            for it in v["items"].as_array().into_iter().flatten() {
+                if let Some(p) = feed::play_of(it, &home_id) {
+                    out.push(p);
+                }
+            }
+            if page >= v["pageCount"].as_u64().unwrap_or(1) {
+                break;
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---------- Kaderwerte (Radare) ----------
 
 #[derive(Serialize, Default, Clone)]
@@ -605,6 +650,41 @@ fn player_stats(v: &Value) -> PlayerStats {
     p
 }
 
+/// Saisonwerte aller Spieler eines Teams (ESPN Core, je Spieler ein Abruf, acht gleichzeitig)
+fn squad(agent: &ureq::Agent, path: &str, id: &str) -> Result<Vec<PlayerStats>, String> {
+    let roster = cached(agent, &format!("{ESPN}/soccer/{path}/teams/{id}/roster"), Duration::from_secs(6 * 3600))?;
+    let players: Vec<(String, String, String, String)> = roster["athletes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| (s(&a["id"]), s(&a["displayName"]), s(&a["jersey"]), s(&a["position"]["abbreviation"])))
+        .filter(|p| !p.0.is_empty())
+        .collect();
+    let yr = season(crate::now_ms());
+    Ok(std::thread::scope(|sc| {
+        players
+            .chunks(8)
+            .flat_map(|chunk| {
+                let hs: Vec<_> = chunk
+                    .iter()
+                    .map(|(pid, name, jersey, pos)| {
+                        sc.spawn(move || {
+                            let url = format!("{CORE}/soccer/leagues/{path}/seasons/{yr}/types/1/athletes/{pid}/statistics");
+                            let mut p = cached(agent, &url, Duration::from_secs(6 * 3600)).map(|v| player_stats(&v)).unwrap_or_default();
+                            p.id = pid.clone();
+                            p.name = name.clone();
+                            p.jersey = jersey.clone();
+                            p.pos = pos.clone();
+                            p
+                        })
+                    })
+                    .collect();
+                hs.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
+            })
+            .collect()
+    }))
+}
+
 #[tauri::command]
 pub async fn squad_stats(key: String) -> Result<Vec<PlayerStats>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -614,39 +694,69 @@ pub async fn squad_stats(key: String) -> Result<Vec<PlayerStats>, String> {
         }
         let agent = feed::agent();
         let path = home_paths(&agent, sport, id).into_iter().next().ok_or("Liga des Teams unbekannt")?;
-        let roster = cached(&agent, &format!("{ESPN}/soccer/{path}/teams/{id}/roster"), Duration::from_secs(6 * 3600))?;
-        let players: Vec<(String, String, String, String)> = roster["athletes"]
-            .as_array()
+        squad(&agent, path, id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize, Clone)]
+pub struct PoolPlayer {
+    team: feed::Team,
+    #[serde(flatten)]
+    stats: PlayerStats,
+}
+
+#[derive(Serialize)]
+pub struct Pool {
+    league: String,
+    players: Vec<PoolPlayer>,
+}
+
+/// Alle Spieler der Liga dieses Teams mit Saisonwerten (fuer „ähnliche Spieler“ und den Vergleich).
+/// Beim ersten Mal ~500 Abrufe (drei Teams gleichzeitig, je acht Spieler), danach 6 h zwischengespeichert.
+#[tauri::command]
+pub async fn league_pool(team: String) -> Result<Pool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (sport, id) = team.split_once(':').ok_or("unbekanntes Team")?;
+        if sport != "soccer" || !id.chars().all(|c| c.is_ascii_digit()) {
+            return Err("Vergleiche gibt es für Fußballteams aus ESPN-Wettbewerben.".into());
+        }
+        let agent = feed::agent();
+        let path = home_paths(&agent, sport, id).into_iter().next().ok_or("Liga des Teams unbekannt")?;
+        let v = cached(&agent, &format!("{ESPN}/soccer/{path}/teams"), Duration::from_secs(DAY))?;
+        let teams: Vec<feed::Team> = v
+            .pointer("/sports/0/leagues/0/teams")
+            .and_then(|x| x.as_array())
             .into_iter()
             .flatten()
-            .map(|a| (s(&a["id"]), s(&a["displayName"]), s(&a["jersey"]), s(&a["position"]["abbreviation"])))
-            .filter(|p| !p.0.is_empty())
+            .map(|t| {
+                let mut tm = feed::team_of(&json!({ "team": t["team"], "score": "" }), "soccer");
+                if tm.logo.is_empty() {
+                    tm.logo = s(&t["team"]["logos"][0]["href"]);
+                }
+                tm
+            })
             .collect();
-        let yr = season(crate::now_ms());
-        let out: Vec<PlayerStats> = std::thread::scope(|sc| {
-            players
-                .chunks(8)
-                .flat_map(|chunk| {
-                    let hs: Vec<_> = chunk
-                        .iter()
-                        .map(|(pid, name, jersey, pos)| {
-                            let agent = &agent;
-                            sc.spawn(move || {
-                                let url = format!("{CORE}/soccer/leagues/{path}/seasons/{yr}/types/1/athletes/{pid}/statistics");
-                                let mut p = cached(agent, &url, Duration::from_secs(6 * 3600)).map(|v| player_stats(&v)).unwrap_or_default();
-                                p.id = pid.clone();
-                                p.name = name.clone();
-                                p.jersey = jersey.clone();
-                                p.pos = pos.clone();
-                                p
-                            })
+        let league = LEAGUES.iter().find(|l| l.espn.contains(&path)).map(|l| l.name).unwrap_or("").to_string();
+        let mut players = Vec::new();
+        for chunk in teams.chunks(3) {
+            let got: Vec<Vec<PoolPlayer>> = std::thread::scope(|sc| {
+                let hs: Vec<_> = chunk
+                    .iter()
+                    .map(|t| {
+                        let agent = &agent;
+                        sc.spawn(move || {
+                            let tid = t.id.rsplit(':').next().unwrap_or("");
+                            squad(agent, path, tid).unwrap_or_default().into_iter().map(|p| PoolPlayer { team: t.clone(), stats: p }).collect::<Vec<_>>()
                         })
-                        .collect();
-                    hs.into_iter().filter_map(|h| h.join().ok()).collect::<Vec<_>>()
-                })
-                .collect()
-        });
-        Ok(out)
+                    })
+                    .collect();
+                hs.into_iter().filter_map(|h| h.join().ok()).collect()
+            });
+            players.extend(got.into_iter().flatten());
+        }
+        Ok(Pool { league, players })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -663,6 +773,25 @@ mod tests {
         let p = project(&[(51.0, 7.0), (51.001, 7.001)], 51.0, 7.0);
         assert_eq!(p[0], [0.0, 0.0]);
         assert!(p[1][0] > 60.0 && p[1][0] < 80.0 && p[1][1] < -100.0);
+    }
+
+    /// Netz noetig: cargo test --lib verlauf_und_pool -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn verlauf_und_pool() {
+        let t = std::time::Instant::now();
+        let (pl, pool) = tauri::async_runtime::block_on(async {
+            (match_plays("soccer/ger.1:401884788".into(), "soccer:131".into(), false).await, league_pool("soccer:131".into()).await)
+        });
+        let pl = pl.expect("Aktionen");
+        let shots = pl.iter().filter(|p| p.kind.contains("shot") || p.kind.starts_with("goal")).count();
+        println!("Aktionen {}, Abschluesse {}", pl.len(), shots);
+        let pool = pool.expect("Pool");
+        let with_min = pool.players.iter().filter(|p| p.stats.minutes > 0.0).count();
+        println!("Pool {}: {} Spieler ({} mit Minuten) in {:.1} s", pool.league, pool.players.len(), with_min, t.elapsed().as_secs_f32());
+        if let Ok(path) = std::env::var("ARENA_DUMP") {
+            let _ = std::fs::write(&path, serde_json::json!({ "plays": pl, "pool": pool }).to_string());
+        }
     }
 
     #[test]
@@ -692,7 +821,7 @@ mod tests {
     fn mehr_quellen() {
         let (v, k, l, pl, rl, v2) = tauri::async_runtime::block_on(async {
             (venue_info("BayArena".into(), "Leverkusen".into()).await, squad_stats("soccer:131".into()).await, league_meta().await,
-             player_info("212330".into(), "ger.1".into(), "Patrik Schick".into()).await, recent_lineups("soccer:131".into()).await, venue_info("Signal Iduna Park".into(), "Dortmund".into()).await)
+             player_info("212330".into(), "ger.1".into(), "Patrik Schick".into(), None).await, recent_lineups("soccer:131".into()).await, venue_info("Signal Iduna Park".into(), "Dortmund".into()).await)
         });
         let v = v.expect("Stadion");
         if let Ok(path) = std::env::var("ARENA_DUMP") {
